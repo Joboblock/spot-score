@@ -2,11 +2,11 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 
-const PORT = 3000;
+const PORT = 8800;
 
 // Simple static file server
 const server = http.createServer((req, res) => {
-    let filePath = path.join(process.cwd(), req.url === "/" ? "index.html" : req.url);
+    let filePath = path.join(process.cwd(), "src", req.url === "/" ? "index.html" : req.url);
 
     const ext = path.extname(filePath);
     let contentType = "text/html";

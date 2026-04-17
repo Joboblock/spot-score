@@ -1,5 +1,9 @@
-import { API_KEY } from "./api-key.js";
+import { API_KEY } from "../api-key.js";
 
+document.addEventListener("DOMContentLoaded", () => {
+    const btn = document.getElementById("searchBtn");
+    if (btn) btn.addEventListener("click", getWeather);
+});
 async function getWeather() {
     const city = document.getElementById("cityInput").value;
     const output = document.getElementById("output");
