@@ -2,22 +2,49 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Weather App</title>
+<title>Hamburg Traffic Noise Explorer</title>
 
+<link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+/>
 <link rel="stylesheet" href="./style.css">
 </head>
 
 <body>
 
 <div class="app">
-    <h2>Weather App</h2>
+    <h2>Hamburg Traffic Noise Explorer</h2>
+    <p class="subtitle">Source: API Hamburg – dataset <code>strassenverkehr</code></p>
 
-    <input id="cityInput" placeholder="Enter city">
-    <button onclick="getWeather()">Search</button>
+    <form id="trafficForm">
+        <label for="collectionSelect">Collection</label>
+        <select id="collectionSelect">
+            <option value="strassenverkehr_tag_abend_nacht_2022">Tag / Abend / Nacht 2022</option>
+            <option value="strassenverkehr_nacht_2022">Nacht 2022</option>
+        </select>
+
+        <label for="klasseInput">Optional klasse filter</label>
+        <input id="klasseInput" placeholder="e.g. 60 - 65 dB(A)">
+
+        <button id="searchBtn" type="submit">Load data</button>
+    </form>
 
     <div id="output" class="result"></div>
+
+    <div class="map-wrapper">
+        <h3>Map View</h3>
+        <div id="map" aria-label="Traffic noise map"></div>
+    </div>
 </div>
 
+<script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+></script>
 <script type="module" src="./script.js"></script>
 
 </body>
