@@ -16,14 +16,19 @@
 <body>
 
 <div class="app">
-    <h2>Hamburg Traffic Noise Explorer</h2>
-    <p class="subtitle">Source: API Hamburg – dataset <code>strassenverkehr</code></p>
+    <h2 id="appTitle">Hamburg Map Explorer</h2>
+    <p id="datasetSource" class="subtitle">Source: API Hamburg</p>
 
     <form id="trafficForm">
-        <label for="collectionSelect">Collection</label>
+        <label for="collectionSelect">Map dataset</label>
         <select id="collectionSelect">
-            <option value="strassenverkehr_tag_abend_nacht_2022">Tag / Abend / Nacht 2022</option>
-            <option value="strassenverkehr_nacht_2022">Nacht 2022</option>
+            <optgroup label="Traffic noise">
+                <option value="traffic_tag_abend_nacht">Tag / Abend / Nacht 2022</option>
+                <option value="traffic_nacht">Nacht 2022</option>
+            </optgroup>
+            <optgroup label="Urban climate analysis 2023">
+                <option value="kaltlufteinwirkbereich">Kaltlufteinwirkbereich</option>
+            </optgroup>
         </select>
 
         <button id="searchBtn" type="submit">Load data</button>
@@ -33,7 +38,7 @@
 
     <div class="map-wrapper">
         <h3>Map View</h3>
-        <div id="map" aria-label="Traffic noise map"></div>
+        <div id="map" aria-label="Hamburg thematic map"></div>
     </div>
 </div>
 
