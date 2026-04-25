@@ -1,6 +1,12 @@
 const BASE_URL = "https://api.hamburg.de/datasets/v1/strassenverkehr";
 const DEFAULT_CENTER = [53.5511, 9.9937];
 const DEFAULT_ZOOM = 11;
+const MIN_ZOOM = 10;
+const MAX_ZOOM = 16;
+const HAMBURG_BOUNDS = [
+    [53.41062884725186, 9.732240484945219],
+    [53.72838568700598, 10.29272015751267]
+];
 let map;
 let featureLayer;
 let legendControl;
@@ -22,11 +28,18 @@ document.addEventListener("DOMContentLoaded", () => {
 function initMap() {
     if (typeof L === "undefined") return;
 
-    map = L.map("map").setView(DEFAULT_CENTER, DEFAULT_ZOOM);
+    map = L.map("map", {
+        attributionControl: false,
+        minZoom: MIN_ZOOM,
+        maxZoom: MAX_ZOOM,
+        maxBounds: HAMBURG_BOUNDS,
+        maxBoundsViscosity: 1.0
+    }).setView(DEFAULT_CENTER, DEFAULT_ZOOM);
 
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19,
-        attribution: "&copy; OpenStreetMap contributors"
+        minZoom: MIN_ZOOM,
+        maxZoom: MAX_ZOOM,
+        attribution: ""
     }).addTo(map);
 }
 
@@ -115,7 +128,7 @@ function renderMap(data, collection) {
 
     const bounds = featureLayer.getBounds();
     if (bounds.isValid()) {
-        map.fitBounds(bounds.pad(0.1));
+        map.fitBounds(bounds.pad(0.05), { maxZoom: 14 });
     }
 }
 
