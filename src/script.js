@@ -4,6 +4,10 @@ const WEATHER_BASE_URL = "https://api.netatmo.com/api/getpublicdata";
 const NOISE_BASE_URL = "https://api.hamburg.de/datasets/v1/strassenverkehr";
 const LDEN_COLLECTION = "strassenverkehr_tag_abend_nacht_2022";
 const NETATMO_NEAREST_COUNT = 3;
+const NETATMO_RADIUS_KM = 1;
+const NETATMO_NEAREST_DISTANCE_FACTOR = 1.5;
+const DISTANCE_WEIGHT_MIN_KM = 0.05;
+const WEATHER_METRICS = ["temperature", "humidity", "windStrength", "rain24h"];
 const DEFAULT_CENTER = [53.5511, 9.9937];
 const DEFAULT_ZOOM = 11;
 const MIN_ZOOM = 10;
@@ -16,7 +20,6 @@ let map;
 let activeLayer;
 let legendControl;
 let queryMarker;
-let weatherStationCache = null;
 
 document.addEventListener("DOMContentLoaded", () => {
     const form = document.getElementById("mapForm");
@@ -58,7 +61,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     initMap();
-    loadSelectedMode();
 });
 
 function initMap() {
@@ -116,8 +118,13 @@ async function loadWeatherData() {
     clearMapLayer();
 
     try {
-        const hamburgStations = await getHamburgWeatherStations();
-        renderWeatherMap(hamburgStations);
+        const focus = getWeatherFocusPoint();
+        const stations = await fetchWeatherStationsWithinRadius(
+            focus.lat,
+            focus.lon,
+            NETATMO_RADIUS_KM
+        );
+        renderWeatherMap(stations);
     } catch (error) {
         clearMapLayer();
     }
@@ -248,12 +255,12 @@ async function handlePointSelection(lat, lon) {
     showLoadingOutput("Loading noise and nearest weather data for selected marker...");
 
     try {
-        const [noiseInfo, nearestStations] = await Promise.all([
+        const [noiseInfo, weatherSelection] = await Promise.all([
             fetchNoiseInfoForPoint(lat, lon),
-            fetchNearestWeatherStations(lat, lon, NETATMO_NEAREST_COUNT)
+            buildWeatherSelectionForPoint(lat, lon)
         ]);
 
-        renderPointResults(lat, lon, noiseInfo, nearestStations);
+        renderPointResults(lat, lon, noiseInfo, weatherSelection);
     } catch (error) {
         renderQueryError(error instanceof Error ? error.message : "Failed to load marker data.");
     }
@@ -319,30 +326,103 @@ async function fetchNoiseInfoForPoint(lat, lon) {
     return nearest ?? { klasse: null, distanceKm: null };
 }
 
-async function fetchNearestWeatherStations(lat, lon, limit) {
-    const stations = await getHamburgWeatherStations();
+async function buildWeatherSelectionForPoint(lat, lon) {
+    const stations = await fetchWeatherStationsWithinRadius(lat, lon, NETATMO_RADIUS_KM);
 
-    return stations
-        .map((station) => ({
-            ...station,
-            distanceKm: haversineDistanceKm(lat, lon, station.lat, station.lon)
-        }))
-        .sort((a, b) => a.distanceKm - b.distanceKm)
-        .slice(0, limit);
+    if (stations.length === 0) {
+        return {
+            usedStations: [],
+            totalStationsUsed: 0,
+            metricStationCounts: {
+                temperature: 0,
+                humidity: 0,
+                windStrength: 0,
+                rain24h: 0
+            },
+            combined: {
+                temperature: null,
+                windStrength: null,
+                rain24h: null,
+                humidity: null
+            }
+        };
+    }
+
+    const sortedByDistance = [...stations].sort((a, b) => a.distanceKm - b.distanceKm);
+    const stationsByMetric = {
+        temperature: selectStationsForMetric(sortedByDistance, "temperature"),
+        humidity: selectStationsForMetric(sortedByDistance, "humidity"),
+        windStrength: selectStationsForMetric(sortedByDistance, "windStrength"),
+        rain24h: selectStationsForMetric(sortedByDistance, "rain24h")
+    };
+
+    const allUsedStations = WEATHER_METRICS.flatMap((metric) => stationsByMetric[metric]);
+    const uniqueStationsById = new Map(allUsedStations.map((station) => [station.id, station]));
+    const usedStations = [...uniqueStationsById.values()].sort((a, b) => a.distanceKm - b.distanceKm);
+
+    const metricStationCounts = {
+        temperature: stationsByMetric.temperature.length,
+        humidity: stationsByMetric.humidity.length,
+        windStrength: stationsByMetric.windStrength.length,
+        rain24h: stationsByMetric.rain24h.length
+    };
+
+    return {
+        usedStations: usedStations.slice(0, NETATMO_NEAREST_COUNT),
+        totalStationsUsed: usedStations.length,
+        metricStationCounts,
+        combined: {
+            temperature: computeWeightedMetric(stationsByMetric.temperature, "temperature"),
+            humidity: computeWeightedMetric(stationsByMetric.humidity, "humidity"),
+            windStrength: computeWeightedMetric(stationsByMetric.windStrength, "windStrength"),
+            rain24h: computeWeightedMetric(stationsByMetric.rain24h, "rain24h")
+        }
+    };
 }
 
-async function getHamburgWeatherStations() {
-    if (weatherStationCache) return weatherStationCache;
+function selectStationsForMetric(sortedStations, metricName) {
+    const metricStations = sortedStations.filter((station) => Number.isFinite(station?.[metricName]));
+    if (metricStations.length === 0) return [];
 
+    const nearestDistanceKm = metricStations[0].distanceKm;
+    const maxAcceptedDistanceKm = nearestDistanceKm * NETATMO_NEAREST_DISTANCE_FACTOR;
+
+    return metricStations.filter((station, index) => {
+        if (index === 0) return true;
+        return station.distanceKm <= maxAcceptedDistanceKm;
+    });
+}
+
+function computeWeightedMetric(stations, metricName) {
+    let weightedSum = 0;
+    let totalWeight = 0;
+
+    stations.forEach((station) => {
+        const value = station?.[metricName];
+        if (!Number.isFinite(value)) return;
+
+        const distance = Math.max(station.distanceKm, DISTANCE_WEIGHT_MIN_KM);
+        const weight = 1 / distance;
+        weightedSum += value * weight;
+        totalWeight += weight;
+    });
+
+    if (totalWeight === 0) return null;
+    return weightedSum / totalWeight;
+}
+
+async function fetchWeatherStationsWithinRadius(lat, lon, radiusKm) {
     if (!ACCESS_TOKEN) {
         throw new Error("Missing Netatmo access token in src/api-key.js.");
     }
 
+    const bbox = getBoundingBoxForRadius(lat, lon, radiusKm);
+
     const params = new URLSearchParams({
-        lat_ne: String(HAMBURG_BOUNDS[1][0]),
-        lon_ne: String(HAMBURG_BOUNDS[1][1]),
-        lat_sw: String(HAMBURG_BOUNDS[0][0]),
-        lon_sw: String(HAMBURG_BOUNDS[0][1]),
+        lat_ne: String(bbox.latNe),
+        lon_ne: String(bbox.lonNe),
+        lat_sw: String(bbox.latSw),
+        lon_sw: String(bbox.lonSw),
         required_data: "temperature",
         filter: "false"
     });
@@ -358,11 +438,28 @@ async function getHamburgWeatherStations() {
     }
 
     const data = await response.json();
-    weatherStationCache = extractHamburgStations(data?.body ?? []);
-    return weatherStationCache;
+    return extractPublicWeatherStations(data?.body ?? [])
+        .map((station) => ({
+            ...station,
+            distanceKm: haversineDistanceKm(lat, lon, station.lat, station.lon)
+        }))
+        .filter((station) => station.distanceKm <= radiusKm);
 }
 
-function renderPointResults(lat, lon, noiseInfo, nearestStations) {
+function getWeatherFocusPoint() {
+    if (queryMarker) {
+        const markerPosition = queryMarker.getLatLng();
+        return { lat: markerPosition.lat, lon: markerPosition.lng };
+    }
+
+    const center = map?.getCenter();
+    return {
+        lat: center?.lat ?? DEFAULT_CENTER[0],
+        lon: center?.lng ?? DEFAULT_CENTER[1]
+    };
+}
+
+function renderPointResults(lat, lon, noiseInfo, weatherSelection) {
     const output = document.getElementById("output");
     if (!output) return;
 
@@ -371,14 +468,19 @@ function renderPointResults(lat, lon, noiseInfo, nearestStations) {
         ? `${noiseInfo.distanceKm.toFixed(3)} km`
         : "n/a";
 
-    const stationRows = nearestStations.length
-        ? nearestStations
+    const usedStations = weatherSelection?.usedStations ?? [];
+    const totalStationsUsed = weatherSelection?.totalStationsUsed ?? 0;
+    const metricStationCounts = weatherSelection?.metricStationCounts ?? {};
+    const combined = weatherSelection?.combined ?? {};
+
+    const stationRows = usedStations.length
+        ? usedStations
               .map(
                   (station, index) => `
                     <li>
                         <strong>#${index + 1} ${station.street ?? station.city ?? "Unknown station"}</strong>
                         <span>${station.distanceKm.toFixed(3)} km</span>
-                        <div>Temp: ${formatValue(station.temperature, "°C")} · Humidity: ${formatValue(station.humidity, "%")} · Pressure: ${formatValue(station.pressure, "mbar")}</div>
+                        <div>Temp: ${formatValue(station.temperature, "°C")} · Humidity: ${formatValue(station.humidity, "%")} · Wind: ${formatValue(station.windStrength, "km/h")} · Rain: ${formatValue(station.rain24h, "mm")}</div>
                     </li>
                 `
               )
@@ -394,7 +496,16 @@ function renderPointResults(lat, lon, noiseInfo, nearestStations) {
             <li><strong>Distance to matched feature</strong><span>${noiseDistanceText}</span></li>
         </ul>
         <h4>Nearest Netatmo Stations</h4>
+        <p><strong>Total stations used (distance weighted):</strong> ${totalStationsUsed}</p>
+    <p><strong>Stations used by metric:</strong> Temp ${metricStationCounts.temperature ?? 0}, Humidity ${metricStationCounts.humidity ?? 0}, Wind ${metricStationCounts.windStrength ?? 0}, Rain ${metricStationCounts.rain24h ?? 0}</p>
         <ul class="klasse-list station-list">${stationRows}</ul>
+        <h4>Combined Weather (distance weighted)</h4>
+        <ul class="klasse-list">
+            <li><strong>Temperature</strong><span>${formatValue(combined.temperature, "°C")}</span></li>
+            <li><strong>Humidity</strong><span>${formatValue(combined.humidity, "%")}</span></li>
+            <li><strong>Wind</strong><span>${formatValue(combined.windStrength, "km/h")}</span></li>
+            <li><strong>Rain (24h)</strong><span>${formatValue(combined.rain24h, "mm")}</span></li>
+        </ul>
     `;
 
     showOutput();
@@ -447,7 +558,7 @@ function isWithinBounds(lat, lon) {
     );
 }
 
-function extractHamburgStations(rawStations) {
+function extractPublicWeatherStations(rawStations) {
     return rawStations
         .map((station) => {
             const location = station?.place?.location;
@@ -455,7 +566,6 @@ function extractHamburgStations(rawStations) {
 
             const [lon, lat] = location;
             const city = station?.place?.city ?? "Unknown city";
-            if (!city.toLowerCase().includes("hamburg")) return null;
 
             const weather = extractStationWeather(station?.measures ?? {});
             if (!weather || !Number.isFinite(weather.temperature)) return null;
@@ -627,6 +737,19 @@ function haversineDistanceKm(lat1, lon1, lat2, lon2) {
 
 function toRadians(value) {
     return (value * Math.PI) / 180;
+}
+
+function getBoundingBoxForRadius(lat, lon, radiusKm) {
+    const latDelta = radiusKm / 111;
+    const safeCos = Math.max(Math.cos(toRadians(lat)), 0.01);
+    const lonDelta = radiusKm / (111 * safeCos);
+
+    return {
+        latNe: lat + latDelta,
+        lonNe: lon + lonDelta,
+        latSw: lat - latDelta,
+        lonSw: lon - lonDelta
+    };
 }
 
 function geometryCenter(geometry) {
