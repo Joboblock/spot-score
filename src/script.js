@@ -3,6 +3,7 @@ import { ACCESS_TOKEN } from "./api-key.js";
 const WEATHER_BASE_URL = "https://api.netatmo.com/api/getpublicdata";
 const NOISE_BASE_URL = "https://api.hamburg.de/datasets/v1/strassenverkehr";
 const LDEN_COLLECTION = "strassenverkehr_tag_abend_nacht_2022";
+const NETATMO_NEAREST_COUNT = 3;
 const DEFAULT_CENTER = [53.5511, 9.9937];
 const DEFAULT_ZOOM = 11;
 const MIN_ZOOM = 10;
@@ -14,15 +15,37 @@ const HAMBURG_BOUNDS = [
 let map;
 let activeLayer;
 let legendControl;
+let queryMarker;
+let weatherStationCache = null;
 
 document.addEventListener("DOMContentLoaded", () => {
     const form = document.getElementById("mapForm");
+    const coordinateForm = document.getElementById("coordinateForm");
     const modeSelect = document.getElementById("mapModeSelect");
+    const latitudeInput = document.getElementById("latitudeInput");
+    const longitudeInput = document.getElementById("longitudeInput");
+
+    hideOutput();
 
     if (form) {
         form.addEventListener("submit", (event) => {
             event.preventDefault();
             loadSelectedMode();
+        });
+    }
+
+    if (coordinateForm) {
+        coordinateForm.addEventListener("submit", (event) => {
+            event.preventDefault();
+            const lat = Number(latitudeInput?.value);
+            const lon = Number(longitudeInput?.value);
+
+            if (!isValidCoordinates(lat, lon)) {
+                renderQueryError("Please enter valid coordinates.");
+                return;
+            }
+
+            handlePointSelection(lat, lon);
         });
     }
 
@@ -54,6 +77,12 @@ function initMap() {
         maxZoom: MAX_ZOOM,
         attribution: ""
     }).addTo(map);
+
+    map.on("click", (event) => {
+        const { lat, lng } = event.latlng;
+        syncCoordinateInputs(lat, lng);
+        handlePointSelection(lat, lng);
+    });
 }
 
 function loadSelectedMode() {
@@ -78,51 +107,23 @@ function updateSubtitle(mode) {
 }
 
 async function loadWeatherData() {
-    const output = document.getElementById("output");
-
     if (!ACCESS_TOKEN) {
-        output.innerHTML = "<div class='error'>Missing Netatmo access token in src/api-key.js.</div>";
+        renderQueryError("Missing Netatmo access token in src/api-key.js.");
         clearMapLayer();
         return;
     }
 
-    output.innerHTML = "<div class='loading'>Loading Netatmo weather stations for Hamburg...</div>";
     clearMapLayer();
 
     try {
-        const params = new URLSearchParams({
-            lat_ne: String(HAMBURG_BOUNDS[1][0]),
-            lon_ne: String(HAMBURG_BOUNDS[1][1]),
-            lat_sw: String(HAMBURG_BOUNDS[0][0]),
-            lon_sw: String(HAMBURG_BOUNDS[0][1]),
-            required_data: "temperature",
-            filter: "false"
-        });
-
-        const response = await fetch(`${WEATHER_BASE_URL}?${params.toString()}`, {
-            headers: {
-                Authorization: `Bearer ${ACCESS_TOKEN}`
-            }
-        });
-
-        if (!response.ok) {
-            throw new Error(`Could not load Netatmo data (HTTP ${response.status}).`);
-        }
-
-        const data = await response.json();
-        const hamburgStations = extractHamburgStations(data?.body ?? []);
-
-        renderWeatherResults(hamburgStations);
+        const hamburgStations = await getHamburgWeatherStations();
         renderWeatherMap(hamburgStations);
     } catch (error) {
-        output.innerHTML = `<div class='error'>${error instanceof Error ? error.message : "Failed to load weather data."}</div>`;
         clearMapLayer();
     }
 }
 
 async function loadNoiseData() {
-    const output = document.getElementById("output");
-    output.innerHTML = "<div class='loading'>Loading Hamburg Lden noise map...</div>";
     clearMapLayer();
 
     try {
@@ -140,10 +141,8 @@ async function loadNoiseData() {
         }
 
         const data = await response.json();
-        renderNoiseResults(data);
         renderNoiseMap(data);
     } catch (error) {
-        output.innerHTML = `<div class='error'>${error instanceof Error ? error.message : "Failed to load noise data."}</div>`;
         clearMapLayer();
     }
 }
@@ -198,45 +197,6 @@ function renderWeatherMap(stations) {
     }
 }
 
-function renderWeatherResults(stations) {
-    const output = document.getElementById("output");
-
-    if (stations.length === 0) {
-        output.innerHTML = "<div class='error'>No public Netatmo stations with weather data found in Hamburg.</div>";
-        return;
-    }
-
-    const temperatures = stations
-        .map((station) => station.temperature)
-        .filter((value) => Number.isFinite(value));
-    const humidities = stations
-        .map((station) => station.humidity)
-        .filter((value) => Number.isFinite(value));
-    const pressures = stations
-        .map((station) => station.pressure)
-        .filter((value) => Number.isFinite(value));
-
-    const latestTimestamp = Math.max(...stations.map((station) => station.timestamp));
-
-    const rows = [
-        { label: "Temperature (avg)", value: formatValue(average(temperatures), "°C") },
-        { label: "Temperature (min)", value: formatValue(Math.min(...temperatures), "°C") },
-        { label: "Temperature (max)", value: formatValue(Math.max(...temperatures), "°C") },
-        { label: "Humidity (avg)", value: formatValue(average(humidities), "%") },
-        { label: "Pressure (avg)", value: formatValue(average(pressures), "mbar") }
-    ]
-        .map((metric) => `<li><strong>${metric.label}</strong><span>${metric.value}</span></li>`)
-        .join("");
-
-    output.innerHTML = `
-        <h3>Public Weather Stations in Hamburg</h3>
-        <p><strong>Stations shown:</strong> ${stations.length}</p>
-        <p><strong>Map mode:</strong> One marker per station, color by temperature</p>
-        <ul class="klasse-list">${rows}</ul>
-        <p class="timestamp">Latest update: ${new Date(latestTimestamp * 1000).toLocaleString()}</p>
-    `;
-}
-
 function renderNoiseMap(data) {
     if (!map) return;
 
@@ -275,34 +235,216 @@ function renderNoiseMap(data) {
     }
 }
 
-function renderNoiseResults(data) {
-    const output = document.getElementById("output");
-    const features = data?.features ?? [];
 
-    if (features.length === 0) {
-        output.innerHTML = "<div class='error'>No matching Lden noise results found.</div>";
+async function handlePointSelection(lat, lon) {
+    if (!map) return;
+
+    if (!isWithinBounds(lat, lon)) {
+        renderQueryError("Selected coordinates are outside the configured Hamburg bounds.");
         return;
     }
 
-    const counts = features.reduce((acc, feature) => {
-        const klasse = feature?.properties?.klasse ?? "Unknown";
-        acc[klasse] = (acc[klasse] ?? 0) + 1;
-        return acc;
-    }, {});
+    placeQueryMarker(lat, lon);
+    showLoadingOutput("Loading noise and nearest weather data for selected marker...");
 
-    const rows = Object.entries(counts)
-        .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
-        .map(([klasse, count]) => `<li><strong>${klasse}</strong><span>${count}</span></li>`)
-        .join("");
+    try {
+        const [noiseInfo, nearestStations] = await Promise.all([
+            fetchNoiseInfoForPoint(lat, lon),
+            fetchNearestWeatherStations(lat, lon, NETATMO_NEAREST_COUNT)
+        ]);
+
+        renderPointResults(lat, lon, noiseInfo, nearestStations);
+    } catch (error) {
+        renderQueryError(error instanceof Error ? error.message : "Failed to load marker data.");
+    }
+}
+
+function placeQueryMarker(lat, lon) {
+    if (!map) return;
+
+    if (queryMarker) {
+        map.removeLayer(queryMarker);
+    }
+
+    queryMarker = L.marker([lat, lon]).addTo(map);
+    queryMarker.bindPopup(`<strong>Selected marker</strong><br/>Lat: ${lat.toFixed(5)}<br/>Lon: ${lon.toFixed(5)}`);
+    queryMarker.openPopup();
+    map.panTo([lat, lon]);
+}
+
+async function fetchNoiseInfoForPoint(lat, lon) {
+    const delta = 0.0007;
+    const params = new URLSearchParams({
+        f: "json",
+        limit: "300",
+        bbox: `${lon - delta},${lat - delta},${lon + delta},${lat + delta}`
+    });
+
+    const response = await fetch(
+        `${NOISE_BASE_URL}/collections/${LDEN_COLLECTION}/items?${params.toString()}`
+    );
+
+    if (!response.ok) {
+        throw new Error(`Could not load point noise data (HTTP ${response.status}).`);
+    }
+
+    const data = await response.json();
+    const features = data?.features ?? [];
+    if (features.length === 0) {
+        return { klasse: null, distanceKm: null };
+    }
+
+    const point = { lat, lon };
+    const containingFeature = features.find((feature) => isPointInsideGeometry(point, feature?.geometry));
+
+    if (containingFeature) {
+        return {
+            klasse: containingFeature?.properties?.klasse ?? null,
+            distanceKm: 0
+        };
+    }
+
+    const nearest = features
+        .map((feature) => {
+            const center = geometryCenter(feature?.geometry);
+            if (!center) return null;
+            return {
+                klasse: feature?.properties?.klasse ?? null,
+                distanceKm: haversineDistanceKm(lat, lon, center.lat, center.lon)
+            };
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.distanceKm - b.distanceKm)[0];
+
+    return nearest ?? { klasse: null, distanceKm: null };
+}
+
+async function fetchNearestWeatherStations(lat, lon, limit) {
+    const stations = await getHamburgWeatherStations();
+
+    return stations
+        .map((station) => ({
+            ...station,
+            distanceKm: haversineDistanceKm(lat, lon, station.lat, station.lon)
+        }))
+        .sort((a, b) => a.distanceKm - b.distanceKm)
+        .slice(0, limit);
+}
+
+async function getHamburgWeatherStations() {
+    if (weatherStationCache) return weatherStationCache;
+
+    if (!ACCESS_TOKEN) {
+        throw new Error("Missing Netatmo access token in src/api-key.js.");
+    }
+
+    const params = new URLSearchParams({
+        lat_ne: String(HAMBURG_BOUNDS[1][0]),
+        lon_ne: String(HAMBURG_BOUNDS[1][1]),
+        lat_sw: String(HAMBURG_BOUNDS[0][0]),
+        lon_sw: String(HAMBURG_BOUNDS[0][1]),
+        required_data: "temperature",
+        filter: "false"
+    });
+
+    const response = await fetch(`${WEATHER_BASE_URL}?${params.toString()}`, {
+        headers: {
+            Authorization: `Bearer ${ACCESS_TOKEN}`
+        }
+    });
+
+    if (!response.ok) {
+        throw new Error(`Could not load Netatmo data (HTTP ${response.status}).`);
+    }
+
+    const data = await response.json();
+    weatherStationCache = extractHamburgStations(data?.body ?? []);
+    return weatherStationCache;
+}
+
+function renderPointResults(lat, lon, noiseInfo, nearestStations) {
+    const output = document.getElementById("output");
+    if (!output) return;
+
+    const noiseClass = noiseInfo?.klasse ?? "n/a";
+    const noiseDistanceText = Number.isFinite(noiseInfo?.distanceKm)
+        ? `${noiseInfo.distanceKm.toFixed(3)} km`
+        : "n/a";
+
+    const stationRows = nearestStations.length
+        ? nearestStations
+              .map(
+                  (station, index) => `
+                    <li>
+                        <strong>#${index + 1} ${station.street ?? station.city ?? "Unknown station"}</strong>
+                        <span>${station.distanceKm.toFixed(3)} km</span>
+                        <div>Temp: ${formatValue(station.temperature, "°C")} · Humidity: ${formatValue(station.humidity, "%")} · Pressure: ${formatValue(station.pressure, "mbar")}</div>
+                    </li>
+                `
+              )
+              .join("")
+        : "<li><strong>No nearby stations found</strong></li>";
 
     output.innerHTML = `
-        <h3>Hamburg Lden Noise Map</h3>
-        <p><strong>Returned features:</strong> ${data.numberReturned ?? features.length}</p>
-        <p><strong>Total matched:</strong> ${data.numberMatched ?? features.length}</p>
-        <p><strong>Map mode:</strong> Noise polygons colored by dB class</p>
-        <ul class="klasse-list">${rows}</ul>
-        <p class="timestamp">Updated: ${formatDate(data.timeStamp)}</p>
+        <h3>Marker Data</h3>
+        <p><strong>Coordinates:</strong> ${lat.toFixed(5)}, ${lon.toFixed(5)}</p>
+        <h4>Nearest Lden Noise Information</h4>
+        <ul class="klasse-list">
+            <li><strong>Noise class</strong><span>${noiseClass}</span></li>
+            <li><strong>Distance to matched feature</strong><span>${noiseDistanceText}</span></li>
+        </ul>
+        <h4>Nearest Netatmo Stations</h4>
+        <ul class="klasse-list station-list">${stationRows}</ul>
     `;
+
+    showOutput();
+}
+
+function showLoadingOutput(message) {
+    const output = document.getElementById("output");
+    if (!output) return;
+    output.innerHTML = `<div class='loading'>${message}</div>`;
+    showOutput();
+}
+
+function renderQueryError(message) {
+    const output = document.getElementById("output");
+    if (!output) return;
+    output.innerHTML = `<div class='error'>${message}</div>`;
+    showOutput();
+}
+
+function hideOutput() {
+    const output = document.getElementById("output");
+    if (!output) return;
+    output.classList.add("is-hidden");
+    output.innerHTML = "";
+}
+
+function showOutput() {
+    const output = document.getElementById("output");
+    if (!output) return;
+    output.classList.remove("is-hidden");
+}
+
+function syncCoordinateInputs(lat, lon) {
+    const latitudeInput = document.getElementById("latitudeInput");
+    const longitudeInput = document.getElementById("longitudeInput");
+    if (latitudeInput) latitudeInput.value = String(lat.toFixed(6));
+    if (longitudeInput) longitudeInput.value = String(lon.toFixed(6));
+}
+
+function isValidCoordinates(lat, lon) {
+    return Number.isFinite(lat) && Number.isFinite(lon);
+}
+
+function isWithinBounds(lat, lon) {
+    return (
+        lat >= HAMBURG_BOUNDS[0][0] &&
+        lat <= HAMBURG_BOUNDS[1][0] &&
+        lon >= HAMBURG_BOUNDS[0][1] &&
+        lon <= HAMBURG_BOUNDS[1][1]
+    );
 }
 
 function extractHamburgStations(rawStations) {
@@ -465,19 +607,86 @@ function updateNoiseLegend(features) {
     legendControl.addTo(map);
 }
 
-function average(values) {
-    if (values.length === 0) return null;
-    const total = values.reduce((sum, value) => sum + value, 0);
-    return total / values.length;
-}
-
 function formatValue(value, unit) {
     if (!Number.isFinite(value)) return "n/a";
     return `${value.toFixed(1)} ${unit}`;
 }
 
-function formatDate(rawValue) {
-    const parsedDate = rawValue ? new Date(rawValue) : null;
-    if (!parsedDate || Number.isNaN(parsedDate.getTime())) return "n/a";
-    return parsedDate.toLocaleString();
+
+function haversineDistanceKm(lat1, lon1, lat2, lon2) {
+    const earthRadiusKm = 6371;
+    const dLat = toRadians(lat2 - lat1);
+    const dLon = toRadians(lon2 - lon1);
+    const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return earthRadiusKm * c;
+}
+
+function toRadians(value) {
+    return (value * Math.PI) / 180;
+}
+
+function geometryCenter(geometry) {
+    const coords = geometry?.coordinates;
+    if (!coords) return null;
+
+    const points = flattenGeometryCoordinates(geometry);
+    if (points.length === 0) return null;
+
+    const sums = points.reduce(
+        (acc, [lon, lat]) => {
+            acc.lat += lat;
+            acc.lon += lon;
+            return acc;
+        },
+        { lat: 0, lon: 0 }
+    );
+
+    return {
+        lat: sums.lat / points.length,
+        lon: sums.lon / points.length
+    };
+}
+
+function flattenGeometryCoordinates(geometry) {
+    if (!geometry) return [];
+    if (geometry.type === "Point") return [geometry.coordinates];
+    if (geometry.type === "Polygon") return geometry.coordinates.flat();
+    if (geometry.type === "MultiPolygon") return geometry.coordinates.flat(2);
+    return [];
+}
+
+function isPointInsideGeometry(point, geometry) {
+    if (!geometry) return false;
+    if (geometry.type === "Polygon") {
+        return isPointInsidePolygon(point, geometry.coordinates[0]);
+    }
+
+    if (geometry.type === "MultiPolygon") {
+        return geometry.coordinates.some((polygon) => isPointInsidePolygon(point, polygon[0]));
+    }
+
+    return false;
+}
+
+function isPointInsidePolygon(point, ring) {
+    if (!Array.isArray(ring) || ring.length < 3) return false;
+    const x = point.lon;
+    const y = point.lat;
+    let isInside = false;
+
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const xi = ring[i][0];
+        const yi = ring[i][1];
+        const xj = ring[j][0];
+        const yj = ring[j][1];
+
+        const intersects = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+        if (intersects) isInside = !isInside;
+    }
+
+    return isInside;
 }

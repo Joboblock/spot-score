@@ -29,7 +29,18 @@
         <button id="searchBtn" type="submit">Load selected map</button>
     </form>
 
-    <div id="output" class="result"></div>
+    <form id="coordinateForm">
+        <label for="latitudeInput">Latitude</label>
+        <input id="latitudeInput" type="number" step="any" placeholder="e.g. 53.5511" required>
+
+        <label for="longitudeInput">Longitude</label>
+        <input id="longitudeInput" type="number" step="any" placeholder="e.g. 9.9937" required>
+
+        <button id="setMarkerBtn" type="submit">Set marker at coordinates</button>
+        <p class="hint">Tip: You can also click directly on the map to place the marker.</p>
+    </form>
+
+    <div id="output" class="result is-hidden" aria-live="polite"></div>
 
     <div class="map-wrapper">
         <h3>Map View</h3>

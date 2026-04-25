@@ -26,12 +26,19 @@ body {
     gap: 8px;
 }
 
+#coordinateForm {
+    display: grid;
+    gap: 8px;
+    margin-top: 12px;
+}
+
 label {
     font-weight: 600;
     margin-top: 6px;
 }
 
 select,
+input,
 button {
     width: 100%;
     padding: 10px;
@@ -52,6 +59,16 @@ button {
     margin-top: 20px;
 }
 
+.result.is-hidden {
+    display: none;
+}
+
+.hint {
+    margin: 4px 0 0;
+    color: #6b7280;
+    font-size: 0.9rem;
+}
+
 .klasse-list {
     list-style: none;
     padding: 0;
@@ -65,6 +82,21 @@ button {
     border: 1px solid #e5e7eb;
     border-radius: 8px;
     margin-bottom: 8px;
+}
+
+.station-list li {
+    display: block;
+}
+
+.station-list li span {
+    display: inline-block;
+    margin: 6px 0;
+    color: #374151;
+}
+
+.station-list li div {
+    color: #4b5563;
+    font-size: 0.9rem;
 }
 
 .loading {
