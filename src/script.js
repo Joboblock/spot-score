@@ -46,6 +46,11 @@ const DATASETS = {
 const MAX_PAGES = 50;
 const PAGE_SIZE = 1000;
 const DEFAULT_CENTER = [53.5511, 9.9937];
+const BRIGHTSKY_CURRENT_WEATHER_URL = "https://api.brightsky.dev/current_weather";
+const HAMBURG_COORDINATES = {
+    lat: 53.5511,
+    lon: 9.9937
+};
 const DEFAULT_ZOOM = 11;
 const MIN_ZOOM = 10;
 const MAX_ZOOM = 16;
@@ -75,8 +80,49 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     initMap();
+    updateHamburgTemperature();
     loadSelectedData();
 });
+
+async function getHamburgTemperature() {
+    const requestUrl = `${BRIGHTSKY_CURRENT_WEATHER_URL}?lat=${HAMBURG_COORDINATES.lat}&lon=${HAMBURG_COORDINATES.lon}`;
+    const response = await fetch(requestUrl);
+
+    if (!response.ok) {
+        throw new Error("Could not load Hamburg temperature from Bright Sky API.");
+    }
+
+    const data = await response.json();
+    const temperature = data?.weather?.temperature;
+
+    if (typeof temperature !== "number") {
+        throw new Error("Bright Sky did not return a valid Hamburg temperature.");
+    }
+
+    return {
+        temperature,
+        timestamp: data?.weather?.timestamp,
+        stationName: data?.sources?.[0]?.station_name ?? "Unknown station"
+    };
+}
+
+async function updateHamburgTemperature() {
+    const temperatureElement = document.getElementById("hamburgTemperature");
+    if (!temperatureElement) return;
+
+    temperatureElement.textContent = "Hamburg temperature: loading...";
+
+    try {
+        const currentWeather = await getHamburgTemperature();
+        const formattedTimestamp = currentWeather.timestamp
+            ? new Date(currentWeather.timestamp).toLocaleString()
+            : "unknown time";
+
+        temperatureElement.textContent = `Hamburg temperature: ${currentWeather.temperature.toFixed(1)}°C (${currentWeather.stationName}, ${formattedTimestamp})`;
+    } catch {
+        temperatureElement.textContent = "Hamburg temperature currently unavailable.";
+    }
+}
 
 function initMap() {
     if (typeof L === "undefined") return;
