@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Hamburg Traffic Noise Explorer</title>
+<title>Hamburg Map Explorer</title>
 
 <link
     rel="stylesheet"
@@ -16,24 +16,24 @@
 <body>
 
 <div class="app">
-    <h2>Hamburg Traffic Noise Explorer</h2>
-    <p class="subtitle">Source: API Hamburg – dataset <code>strassenverkehr</code></p>
+    <h2>Hamburg Map Explorer</h2>
+    <p id="subtitleText" class="subtitle">Select a map mode to load either Lden noise data or Netatmo weather stations.</p>
 
-    <form id="trafficForm">
-        <label for="collectionSelect">Collection</label>
-        <select id="collectionSelect">
-            <option value="strassenverkehr_tag_abend_nacht_2022">Tag / Abend / Nacht 2022</option>
-            <option value="strassenverkehr_nacht_2022">Nacht 2022</option>
+    <form id="mapForm">
+        <label for="mapModeSelect">Map mode</label>
+        <select id="mapModeSelect">
+            <option value="noise" selected>Lden noise map</option>
+            <option value="weather">Netatmo weather map</option>
         </select>
 
-        <button id="searchBtn" type="submit">Load data</button>
+        <button id="searchBtn" type="submit">Load selected map</button>
     </form>
 
     <div id="output" class="result"></div>
 
     <div class="map-wrapper">
         <h3>Map View</h3>
-        <div id="map" aria-label="Traffic noise map"></div>
+        <div id="map" aria-label="Hamburg map view"></div>
     </div>
 </div>
 
