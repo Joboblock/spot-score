@@ -43,7 +43,7 @@ const DATASETS = {
     }
 };
 
-const MAX_PAGES = 12;
+const MAX_PAGES = 50;
 const PAGE_SIZE = 1000;
 const DEFAULT_CENTER = [53.5511, 9.9937];
 const DEFAULT_ZOOM = 11;
