@@ -3,6 +3,7 @@ const DEFAULT_CENTER = [53.5511, 9.9937];
 const DEFAULT_ZOOM = 11;
 let map;
 let featureLayer;
+let legendControl;
 
 document.addEventListener("DOMContentLoaded", () => {
     const form = document.getElementById("trafficForm");
@@ -32,7 +33,6 @@ function initMap() {
 async function loadTrafficData() {
     const output = document.getElementById("output");
     const collection = document.getElementById("collectionSelect")?.value;
-    const klasse = document.getElementById("klasseInput")?.value.trim();
 
     if (!collection) {
         output.innerHTML = "<div class='error'>Please select a dataset.</div>";
@@ -47,8 +47,6 @@ async function loadTrafficData() {
             limit: "100"
         });
 
-        if (klasse) params.set("klasse", klasse);
-
         const response = await fetch(
             `${BASE_URL}/collections/${collection}/items?${params.toString()}`
         );
@@ -58,7 +56,7 @@ async function loadTrafficData() {
         }
 
         const data = await response.json();
-        renderResults(data, collection, klasse);
+        renderResults(data, collection);
         renderMap(data, collection);
     } catch (error) {
         output.innerHTML = `<div class='error'>${error.message}</div>`;
@@ -82,27 +80,38 @@ function renderMap(data, collection) {
 
     if (mapFeatures.length === 0) return;
 
-    const color =
-        collection === "strassenverkehr_nacht_2022" ? "#ef4444" : "#0f62fe";
-
     featureLayer = L.geoJSON(
         {
             type: "FeatureCollection",
             features: mapFeatures
         },
         {
-            style: {
-                color,
-                weight: 1,
-                fillColor: color,
-                fillOpacity: 0.35
+            style: (feature) => {
+                const klasse = feature?.properties?.klasse ?? "Unknown";
+                const fillColor = getKlasseColor(klasse);
+
+                return {
+                    color: "#ffffff",
+                    weight: 0.6,
+                    fillColor,
+                    fillOpacity: 0.75
+                };
             },
             onEachFeature: (feature, layer) => {
                 const klasse = feature?.properties?.klasse ?? "Unknown";
-                layer.bindPopup(`<strong>Klasse:</strong> ${klasse}`);
+                const collectionLabel =
+                    collection === "strassenverkehr_nacht_2022"
+                        ? "Nacht 2022"
+                        : "Tag / Abend / Nacht 2022";
+
+                layer.bindPopup(
+                    `<strong>Klasse:</strong> ${klasse}<br/><strong>Collection:</strong> ${collectionLabel}`
+                );
             }
         }
     ).addTo(map);
+
+    updateLegend(mapFeatures);
 
     const bounds = featureLayer.getBounds();
     if (bounds.isValid()) {
@@ -110,7 +119,7 @@ function renderMap(data, collection) {
     }
 }
 
-function renderResults(data, collection, klasseFilter) {
+function renderResults(data, collection) {
     const output = document.getElementById("output");
     const features = data?.features ?? [];
 
@@ -141,8 +150,57 @@ function renderResults(data, collection, klasseFilter) {
         <h3>${title}</h3>
         <p><strong>Returned features:</strong> ${data.numberReturned ?? features.length}</p>
         <p><strong>Total matched:</strong> ${data.numberMatched ?? features.length}</p>
-        ${klasseFilter ? `<p><strong>Filter:</strong> klasse = ${klasseFilter}</p>` : ""}
+        <p><strong>Map mode:</strong> All available dB classes shown together</p>
         <ul class="klasse-list">${rows}</ul>
         <p class="timestamp">Updated: ${new Date(data.timeStamp).toLocaleString()}</p>
     `;
+}
+
+function parseLowerDbBound(klasseLabel) {
+    const lowerBoundMatch = klasseLabel.match(/(\d+)\s*-\s*\d+/);
+    if (lowerBoundMatch) return Number(lowerBoundMatch[1]);
+
+    const atLeastMatch = klasseLabel.match(/>=\s*(\d+)/);
+    if (atLeastMatch) return Number(atLeastMatch[1]);
+
+    return 0;
+}
+
+function getKlasseColor(klasseLabel) {
+    const lowerDb = parseLowerDbBound(klasseLabel);
+
+    if (lowerDb >= 75) return "#7f0000";
+    if (lowerDb >= 70) return "#b30000";
+    if (lowerDb >= 65) return "#e34a33";
+    if (lowerDb >= 60) return "#fc8d59";
+    if (lowerDb >= 55) return "#fdbb84";
+    return "#fee8c8";
+}
+
+function updateLegend(features) {
+    if (!map) return;
+
+    if (legendControl) {
+        map.removeControl(legendControl);
+    }
+
+    const classes = [...new Set(features.map((feature) => feature?.properties?.klasse ?? "Unknown"))]
+        .sort((a, b) => parseLowerDbBound(a) - parseLowerDbBound(b));
+
+    legendControl = L.control({ position: "bottomright" });
+    legendControl.onAdd = () => {
+        const div = L.DomUtil.create("div", "map-legend");
+        div.innerHTML = `
+            <h4>dB(A) levels</h4>
+            ${classes
+                .map(
+                    (klasse) =>
+                        `<div class="legend-item"><span class="legend-color" style="background:${getKlasseColor(klasse)}"></span>${klasse}</div>`
+                )
+                .join("")}
+        `;
+        return div;
+    };
+
+    legendControl.addTo(map);
 }
