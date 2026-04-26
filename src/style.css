@@ -56,7 +56,7 @@ button {
 }
 
 .result {
-    margin-top: 20px;
+    margin-top: 18px;
 }
 
 .result.is-hidden {
@@ -110,6 +110,15 @@ button {
 .timestamp {
     color: #6b7280;
     font-size: 0.9rem;
+}
+
+.score-value {
+    font-variant-numeric: tabular-nums;
+}
+
+.score-value.is-general {
+    font-weight: 700;
+    color: #0f62fe;
 }
 
 .map-wrapper {

@@ -1,6 +1,8 @@
 import { ACCESS_TOKEN } from "./api-key.js";
+import { buildSpotScores, TEMP_OPTIMAL_C } from "./utils.js";
 
 const WEATHER_BASE_URL = "https://api.netatmo.com/api/getpublicdata";
+const OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v1/forecast";
 const NOISE_BASE_URL = "https://api.hamburg.de/datasets/v1/strassenverkehr";
 const LDEN_COLLECTION = "strassenverkehr_tag_abend_nacht_2022";
 const NETATMO_NEAREST_COUNT = 3;
@@ -16,6 +18,7 @@ const HAMBURG_BOUNDS = [
     [53.41062884725186, 9.732240484945219],
     [53.72838568700598, 10.29272015751267]
 ];
+const CITY_AVERAGE_SAMPLE_POINT_COUNT = 5;
 let map;
 let activeLayer;
 let legendControl;
@@ -255,12 +258,13 @@ async function handlePointSelection(lat, lon) {
     showLoadingOutput("Loading noise and nearest weather data for selected marker...");
 
     try {
-        const [noiseInfo, weatherSelection] = await Promise.all([
+        const [noiseInfo, weatherSelection, cityTemperatureStats] = await Promise.all([
             fetchNoiseInfoForPoint(lat, lon),
-            buildWeatherSelectionForPoint(lat, lon)
+            buildWeatherSelectionForPoint(lat, lon),
+            fetchAverageCityTemperature(lat, lon).catch(() => null)
         ]);
 
-        renderPointResults(lat, lon, noiseInfo, weatherSelection);
+        renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatureStats);
     } catch (error) {
         renderQueryError(error instanceof Error ? error.message : "Failed to load marker data.");
     }
@@ -380,6 +384,73 @@ async function buildWeatherSelectionForPoint(lat, lon) {
     };
 }
 
+async function fetchAverageCityTemperature(lat, lon) {
+    const samplePoints = getHamburgTemperatureSamplePoints();
+    const temperatureSamples = await Promise.all(
+        samplePoints.map((point) => fetchCurrentTemperatureAtPoint(point.lat, point.lon).catch(() => null))
+    );
+
+    const numericSamples = temperatureSamples.filter(Number.isFinite);
+    if (numericSamples.length === 0) {
+        throw new Error("Open-Meteo did not return current temperatures for Hamburg sample points.");
+    }
+
+    const averageCityTemperature =
+        numericSamples.reduce((sum, value) => sum + value, 0) / numericSamples.length;
+    const tempDifference = Math.abs(TEMP_OPTIMAL_C - averageCityTemperature);
+
+    return {
+        averageCityTemperature,
+        tempDifference,
+        samplePointsUsed: numericSamples.length,
+        samplePointsTotal: samplePoints.length
+    };
+}
+
+function getHamburgTemperatureSamplePoints() {
+    const [southWest, northEast] = HAMBURG_BOUNDS;
+    const latMin = southWest[0];
+    const lonMin = southWest[1];
+    const latMax = northEast[0];
+    const lonMax = northEast[1];
+
+    const centerLat = (latMin + latMax) / 2;
+    const centerLon = (lonMin + lonMax) / 2;
+
+    const points = [
+        { lat: centerLat, lon: centerLon },
+        { lat: latMin, lon: lonMin },
+        { lat: latMin, lon: lonMax },
+        { lat: latMax, lon: lonMin },
+        { lat: latMax, lon: lonMax }
+    ];
+
+    return points.slice(0, CITY_AVERAGE_SAMPLE_POINT_COUNT);
+}
+
+async function fetchCurrentTemperatureAtPoint(lat, lon) {
+    const params = new URLSearchParams({
+        latitude: String(lat),
+        longitude: String(lon),
+        current: "temperature_2m",
+        timezone: "auto"
+    });
+
+    const response = await fetch(`${OPEN_METEO_BASE_URL}?${params.toString()}`);
+    if (!response.ok) {
+        throw new Error(`Could not load Open-Meteo current data (HTTP ${response.status}).`);
+    }
+
+    const data = await response.json();
+    const currentTemperature = data?.current?.temperature_2m;
+
+    if (!Number.isFinite(currentTemperature)) {
+        throw new Error("Open-Meteo response did not include current temperature.");
+    }
+
+    return currentTemperature;
+}
+
 function selectStationsForMetric(sortedStations, metricName) {
     const metricStations = sortedStations.filter((station) => Number.isFinite(station?.[metricName]));
     if (metricStations.length === 0) return [];
@@ -459,7 +530,7 @@ function getWeatherFocusPoint() {
     };
 }
 
-function renderPointResults(lat, lon, noiseInfo, weatherSelection) {
+function renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatureStats) {
     const output = document.getElementById("output");
     if (!output) return;
 
@@ -472,6 +543,7 @@ function renderPointResults(lat, lon, noiseInfo, weatherSelection) {
     const totalStationsUsed = weatherSelection?.totalStationsUsed ?? 0;
     const metricStationCounts = weatherSelection?.metricStationCounts ?? {};
     const combined = weatherSelection?.combined ?? {};
+    const spotScores = buildSpotScores(noiseInfo, combined, cityTemperatureStats);
 
     const stationRows = usedStations.length
         ? usedStations
@@ -505,6 +577,17 @@ function renderPointResults(lat, lon, noiseInfo, weatherSelection) {
             <li><strong>Humidity</strong><span>${formatValue(combined.humidity, "%")}</span></li>
             <li><strong>Wind</strong><span>${formatValue(combined.windStrength, "km/h")}</span></li>
             <li><strong>Rain (24h)</strong><span>${formatValue(combined.rain24h, "mm")}</span></li>
+            <li><strong>Open-Meteo current Hamburg average temp (${cityTemperatureStats?.samplePointsUsed ?? 0}/${cityTemperatureStats?.samplePointsTotal ?? 0} points)</strong><span>${formatValue(cityTemperatureStats?.averageCityTemperature, "°C")}</span></li>
+            <li><strong>Temp difference to optimal (${TEMP_OPTIMAL_C}°C)</strong><span>${formatValue(cityTemperatureStats?.tempDifference, "°C")}</span></li>
+        </ul>
+        <h4>Spot Scores (0.1–10)</h4>
+        <ul class="klasse-list">
+            <li><strong>Noise</strong><span class="score-value">${formatScore(spotScores.noise)}</span></li>
+            <li><strong>Temperature</strong><span class="score-value">${formatScore(spotScores.temperature)}</span></li>
+            <li><strong>Humidity</strong><span class="score-value">${formatScore(spotScores.humidity)}</span></li>
+            <li><strong>Wind</strong><span class="score-value">${formatScore(spotScores.wind)}</span></li>
+            <li><strong>Rain</strong><span class="score-value">${formatScore(spotScores.rain)}</span></li>
+            <li><strong>General spot score</strong><span class="score-value is-general">${formatScore(spotScores.general)}</span></li>
         </ul>
     `;
 
@@ -722,6 +805,10 @@ function formatValue(value, unit) {
     return `${value.toFixed(1)} ${unit}`;
 }
 
+function formatScore(value) {
+    if (!Number.isFinite(value)) return "n/a";
+    return value.toFixed(1);
+}
 
 function haversineDistanceKm(lat1, lon1, lat2, lon2) {
     const earthRadiusKm = 6371;
