@@ -18,15 +18,20 @@
 <div id="map" aria-label="Hamburg map background"></div>
 
 <aside class="app" aria-label="Spot score sidebar">
-    <h2>Hamburg Map Explorer</h2>
-    <p id="subtitleText" class="subtitle">Pick a spot (map click or clipboard import) to see that location and the weather stations used for scoring.</p>
+    <div class="app-shell">
+        <header class="app-header">
+            <p class="eyebrow">Spot Score</p>
+            <h1>Hamburg Map Explorer</h1>
+            <p id="subtitleText" class="subtitle">Pick a spot on the map or import coordinates from your clipboard to compare local weather signals and compute a location score.</p>
+        </header>
 
-    <div class="import-spot-controls">
-        <button id="importSpotBtn" type="button">Import Spot</button>
-        <p class="hint">Copy coordinates to clipboard (e.g. <code>53.5511, 9.9937</code>) and click Import Spot. You can also click directly on the map.</p>
+        <section class="import-spot-controls panel">
+            <button id="importSpotBtn" type="button">Import Spot</button>
+            <p class="hint">Copy coordinates to your clipboard, for example <code>53.5511, 9.9937</code>, then click Import Spot. You can also click directly on the map.</p>
+        </section>
+
+        <div id="output" class="result is-hidden" aria-live="polite"></div>
     </div>
-
-    <div id="output" class="result is-hidden" aria-live="polite"></div>
 </aside>
 
 <script

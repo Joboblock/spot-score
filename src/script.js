@@ -209,16 +209,16 @@ function renderUsedStationsOnMap(usedStations) {
         .map((station) => {
             const marker = L.circleMarker([station.lat, station.lon], {
                 radius: 6,
-                color: "#ffffff",
-                weight: 1,
-                fillColor: "#0f62fe",
+                color: "#0e4d25",
+                weight: 1.5,
+                fillColor: "#c0ed55",
                 fillOpacity: 0.92
             });
 
             marker.bindPopup(
                 `<strong>Used weather station</strong><br/>` +
                     `${station.street ?? station.city ?? "Unknown station"}<br/>` +
-                    `Distance: ${Number.isFinite(station.distanceKm) ? station.distanceKm.toFixed(3) : "n/a"} km`
+                    `Distance: ${formatDistance(station.distanceKm)}`
             );
 
             return marker;
@@ -233,60 +233,141 @@ function renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatu
     if (!output) return;
 
     const noiseClass = noiseInfo?.klasse ?? "n/a";
-    const noiseDistanceText = Number.isFinite(noiseInfo?.distanceKm)
-        ? `${noiseInfo.distanceKm.toFixed(3)} km`
-        : "n/a";
+    const noiseDistanceText = formatDistance(noiseInfo?.distanceKm);
 
     const usedStations = weatherSelection?.usedStations ?? [];
     const totalStationsUsed = weatherSelection?.totalStationsUsed ?? 0;
     const metricStationCounts = weatherSelection?.metricStationCounts ?? {};
     const combined = weatherSelection?.combined ?? {};
     const spotScores = buildSpotScores(noiseInfo, combined, cityTemperatureStats);
+    const generalScoreText = formatScore(spotScores.general);
 
     const stationRows = usedStations.length
         ? usedStations
               .map(
                   (station, index) => `
                     <li>
-                        <strong>#${index + 1} ${station.street ?? station.city ?? "Unknown station"}</strong>
-                        <span>${station.distanceKm.toFixed(3)} km</span>
-                        <div>Temp: ${formatValue(station.temperature, "°C")} · Humidity: ${formatValue(station.humidity, "%")} · Wind: ${formatValue(station.windStrength, "km/h")} · Rain: ${formatValue(station.rain24h, "mm")}</div>
+                        <div class="station-list__head">
+                            <div>
+                                <p class="station-list__label">Station #${index + 1}</p>
+                                <strong>${station.street ?? station.city ?? "Unknown station"}</strong>
+                            </div>
+                            <span class="station-list__distance">${formatDistance(station.distanceKm)}</span>
+                        </div>
+                        <div class="station-metrics">
+                            <div class="station-metric">
+                                <span>Temperature</span>
+                                <strong>${formatValue(station.temperature, "°C")}</strong>
+                            </div>
+                            <div class="station-metric">
+                                <span>Humidity</span>
+                                <strong>${formatValue(station.humidity, "%")}</strong>
+                            </div>
+                            <div class="station-metric">
+                                <span>Wind</span>
+                                <strong>${formatValue(station.windStrength, "km/h")}</strong>
+                            </div>
+                            <div class="station-metric">
+                                <span>Rain (24h)</span>
+                                <strong>${formatValue(station.rain24h, "mm")}</strong>
+                            </div>
+                        </div>
                     </li>
                 `
               )
               .join("")
-        : "<li><strong>No nearby stations found</strong></li>";
+        : `
+            <li>
+                <div class="station-list__head">
+                    <div>
+                        <p class="station-list__label">Stations</p>
+                        <strong>No nearby stations found</strong>
+                    </div>
+                </div>
+            </li>
+        `;
 
     output.innerHTML = `
-        <h3>Marker Data</h3>
-        <p><strong>Coordinates:</strong> ${lat.toFixed(5)}, ${lon.toFixed(5)}</p>
-        <h4>Nearest Lden Noise Information</h4>
-        <ul class="klasse-list">
-            <li><strong>Noise class</strong><span>${noiseClass}</span></li>
-            <li><strong>Distance to matched feature</strong><span>${noiseDistanceText}</span></li>
-        </ul>
-        <h4>Nearest Netatmo Stations</h4>
-        <p><strong>Total stations used (distance weighted):</strong> ${totalStationsUsed}</p>
-    <p><strong>Stations used by metric:</strong> Temp ${metricStationCounts.temperature ?? 0}, Humidity ${metricStationCounts.humidity ?? 0}, Wind ${metricStationCounts.windStrength ?? 0}, Rain ${metricStationCounts.rain24h ?? 0}</p>
-        <ul class="klasse-list station-list">${stationRows}</ul>
-        <h4>Combined Weather (distance weighted)</h4>
-        <ul class="klasse-list">
-            <li><strong>Temperature</strong><span>${formatValue(combined.temperature, "°C")}</span></li>
-            <li><strong>Humidity</strong><span>${formatValue(combined.humidity, "%")}</span></li>
-            <li><strong>Wind</strong><span>${formatValue(combined.windStrength, "km/h")}</span></li>
-            <li><strong>Rain (24h)</strong><span>${formatValue(combined.rain24h, "mm")}</span></li>
-            <li><strong>Open-Meteo current Hamburg average temp (${cityTemperatureStats?.samplePointsUsed ?? 0}/${cityTemperatureStats?.samplePointsTotal ?? 0} points)</strong><span>${formatValue(cityTemperatureStats?.averageCityTemperature, "°C")}</span></li>
-            <li><strong>Temp difference to optimal (${TEMP_OPTIMAL_C}°C)</strong><span>${formatValue(cityTemperatureStats?.tempDifference, "°C")}</span></li>
-        </ul>
-        <h4>Spot Scores (0.1–10)</h4>
-        <ul class="klasse-list">
-            <li><strong>Noise</strong><span class="score-value">${formatScore(spotScores.noise)}</span></li>
-            <li><strong>Temperature</strong><span class="score-value">${formatScore(spotScores.temperature)}</span></li>
-            <li><strong>Humidity</strong><span class="score-value">${formatScore(spotScores.humidity)}</span></li>
-            <li><strong>Wind</strong><span class="score-value">${formatScore(spotScores.wind)}</span></li>
-            <li><strong>Rain</strong><span class="score-value">${formatScore(spotScores.rain)}</span></li>
-            <li><strong>General spot score</strong><span class="score-value is-general">${formatScore(spotScores.general)}</span></li>
-        </ul>
+        <div class="result-stack">
+            <section class="result-card result-card--hero">
+                <div class="hero-meta">
+                    <span class="pill">Selected spot</span>
+                    <span class="pill pill--accent">Hamburg scoring</span>
+                </div>
+                <h3>Marker Data</h3>
+                <p class="coordinates">${lat.toFixed(5)}, ${lon.toFixed(5)}</p>
+                <div class="quick-stats">
+                    <div class="quick-stat">
+                        <span>Noise class</span>
+                        <strong>${noiseClass}</strong>
+                    </div>
+                    <div class="quick-stat">
+                        <span>Distance to matched feature</span>
+                        <strong>${noiseDistanceText}</strong>
+                    </div>
+                </div>
+            </section>
+
+            <details class="accordion">
+                <summary>
+                    <div class="accordion__copy">
+                        <p class="accordion__eyebrow">Stations</p>
+                        <h4>Nearest used weather stations</h4>
+                    </div>
+                    <span class="accordion__meta">${totalStationsUsed} used</span>
+                </summary>
+                <div class="accordion__content">
+                    <p class="section-note">Distance-weighted selection by metric: Temp ${metricStationCounts.temperature ?? 0}, Humidity ${metricStationCounts.humidity ?? 0}, Wind ${metricStationCounts.windStrength ?? 0}, Rain ${metricStationCounts.rain24h ?? 0}.</p>
+                    <ul class="station-list">${stationRows}</ul>
+                </div>
+            </details>
+
+            <details class="accordion">
+                <summary>
+                    <div class="accordion__copy">
+                        <p class="accordion__eyebrow">Weather</p>
+                        <h4>Combined weather</h4>
+                    </div>
+                    <span class="accordion__meta">${formatValue(combined.temperature, "°C")}</span>
+                </summary>
+                <div class="accordion__content">
+                    <ul class="stat-list">
+                        <li><strong>Temperature</strong><span>${formatValue(combined.temperature, "°C")}</span></li>
+                        <li><strong>Humidity</strong><span>${formatValue(combined.humidity, "%")}</span></li>
+                        <li><strong>Wind</strong><span>${formatValue(combined.windStrength, "km/h")}</span></li>
+                        <li><strong>Rain (24h)</strong><span>${formatValue(combined.rain24h, "mm")}</span></li>
+                        <li><strong>Open-Meteo Hamburg average temperature</strong><span>${formatValue(cityTemperatureStats?.averageCityTemperature, "°C")}</span></li>
+                        <li><strong>Sample points used</strong><span>${cityTemperatureStats?.samplePointsUsed ?? 0}/${cityTemperatureStats?.samplePointsTotal ?? 0}</span></li>
+                        <li><strong>Temp difference to optimal (${TEMP_OPTIMAL_C}°C)</strong><span>${formatValue(cityTemperatureStats?.tempDifference, "°C")}</span></li>
+                    </ul>
+                </div>
+            </details>
+
+            <details class="accordion" open>
+                <summary>
+                    <div class="accordion__copy">
+                        <p class="accordion__eyebrow">Scoring</p>
+                        <h4>Spot scores</h4>
+                    </div>
+                    <span class="accordion__meta">${generalScoreText} / 10</span>
+                </summary>
+                <div class="accordion__content">
+                    <ul class="score-list">
+                        <li><strong>Noise</strong><span class="score-value">${formatScore(spotScores.noise)}</span></li>
+                        <li><strong>Temperature</strong><span class="score-value">${formatScore(spotScores.temperature)}</span></li>
+                        <li><strong>Humidity</strong><span class="score-value">${formatScore(spotScores.humidity)}</span></li>
+                        <li><strong>Wind</strong><span class="score-value">${formatScore(spotScores.wind)}</span></li>
+                        <li><strong>Rain</strong><span class="score-value">${formatScore(spotScores.rain)}</span></li>
+                    </ul>
+                </div>
+            </details>
+
+            <section class="result-card result-card--score">
+                <p class="score-kicker">General spot score</p>
+                <div class="score-display">${generalScoreText}</div>
+                <p class="score-caption">A combined read across noise, temperature, humidity, wind, and rain for the selected point.</p>
+            </section>
+        </div>
     `;
 
     showOutput();
@@ -295,14 +376,22 @@ function renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatu
 function showLoadingOutput(message) {
     const output = document.getElementById("output");
     if (!output) return;
-    output.innerHTML = `<div class='loading'>${message}</div>`;
+    output.innerHTML = `
+        <section class="result-card">
+            <p class="loading">${message}</p>
+        </section>
+    `;
     showOutput();
 }
 
 function renderQueryError(message) {
     const output = document.getElementById("output");
     if (!output) return;
-    output.innerHTML = `<div class='error'>${message}</div>`;
+    output.innerHTML = `
+        <section class="result-card">
+            <p class="error">${message}</p>
+        </section>
+    `;
     showOutput();
 }
 
@@ -335,6 +424,11 @@ function isWithinBounds(lat, lon) {
 function formatValue(value, unit) {
     if (!Number.isFinite(value)) return "n/a";
     return `${value.toFixed(1)} ${unit}`;
+}
+
+function formatDistance(value) {
+    if (!Number.isFinite(value)) return "n/a";
+    return `${value.toFixed(3)} km`;
 }
 
 function formatScore(value) {
