@@ -1,8 +1,8 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="de">
 <head>
 <meta charset="UTF-8">
-<title>Hamburg Map Explorer</title>
+<title>SpotScore Hamburg</title>
 
 <link
     rel="stylesheet"
@@ -15,37 +15,110 @@
 
 <body>
 
+<div class="brand-word" aria-hidden="true">SPOTSCORE</div>
 <div class="app">
-    <h2>Hamburg Map Explorer</h2>
-    <p id="subtitleText" class="subtitle">Select a map mode to load either Lden noise data or Netatmo weather stations.</p>
+    <header class="topbar">
+        <a class="brand-logo" href="#start">SpotScore</a>
+        <nav class="top-nav" aria-label="Seitennavigation">
+            <a href="#demo">Demo</a>
+            <a href="#score-strip">Score verstehen</a>
+            <a href="#datenbasis">Datenbasis</a>
+        </nav>
+    </header>
 
-    <form id="mapForm">
-        <label for="mapModeSelect">Map mode</label>
-        <select id="mapModeSelect">
-            <option value="noise" selected>Lden noise map</option>
-            <option value="weather">Netatmo weather map</option>
-        </select>
+    <section id="start" class="hero">
+        <div class="hero-copy">
+            <p class="eyebrow">Hamburg Stadtdaten</p>
+            <h1>FINDE DEINEN<br>BESTEN SPOT<br>IN HAMBURG</h1>
+            <p class="hero-subline">
+                SpotScore bewertet öffentliche Orte anhand von Hamburgs Urban Data — damit du sofort siehst,
+                wo es gerade ruhig, schattig und erreichbar ist.
+            </p>
 
-        <button id="searchBtn" type="submit">Load selected map</button>
-    </form>
+            <div class="hero-actions">
+                <a class="split-button" href="#demo">
+                    <span>Karte öffnen</span>
+                    <span class="split-arrow" aria-hidden="true">→</span>
+                </a>
+                <a class="lime-button" href="#score-strip">Score verstehen</a>
+            </div>
 
-    <form id="coordinateForm">
-        <label for="latitudeInput">Latitude</label>
-        <input id="latitudeInput" type="number" step="any" placeholder="e.g. 53.5511" required>
+            <article class="hero-score-card" aria-label="Beispiel SpotScore">
+                <p class="hero-score-title">Beispiel Spot</p>
+                <p class="hero-score-number">91</p>
+                <p class="hero-score-meta">Sehr guter Spot · Schattig · Ruhig · Gut erreichbar</p>
+            </article>
+        </div>
 
-        <label for="longitudeInput">Longitude</label>
-        <input id="longitudeInput" type="number" step="any" placeholder="e.g. 9.9937" required>
+        <div id="demo" class="hero-map-mass">
+            <div class="diagonal-shape" aria-hidden="true"></div>
 
-        <button id="setMarkerBtn" type="submit">Set marker at coordinates</button>
-        <p class="hint">Tip: You can also click directly on the map to place the marker.</p>
-    </form>
+            <div class="map-interface">
+                <div class="map-header">
+                    <h2>Demo</h2>
+                    <div class="filter-pills" aria-hidden="true">
+                        <span>Ruhig</span>
+                        <span>Schattig</span>
+                        <span>Wasser nah</span>
+                        <span>Gut erreichbar</span>
+                    </div>
+                </div>
 
-    <div class="map-wrapper">
-        <h3>Map View</h3>
-        <div id="map" aria-label="Hamburg map view"></div>
-    </div>
+                <div class="controls-cluster">
+                    <form id="mapForm" class="control-card">
+                        <label for="mapModeSelect">Datenmodus</label>
+                        <select id="mapModeSelect">
+                            <option value="noise" selected>Lden-Lärmkarte</option>
+                            <option value="weather">Netatmo-Wetterkarte</option>
+                        </select>
 
-    <div id="output" class="result is-hidden" aria-live="polite"></div>
+                        <button id="searchBtn" type="submit">Ausgewählte Karte laden</button>
+                    </form>
+
+                    <form id="coordinateForm" class="control-card">
+                        <label for="latitudeInput">Breitengrad</label>
+                        <input id="latitudeInput" type="number" step="any" placeholder="z. B. 53.5511" required>
+
+                        <label for="longitudeInput">Längengrad</label>
+                        <input id="longitudeInput" type="number" step="any" placeholder="z. B. 9.9937" required>
+
+                        <button id="setMarkerBtn" type="submit">Spot bei Koordinaten setzen</button>
+                        <p class="hint">Tipp: Du kannst den Spot auch direkt auf der Karte setzen.</p>
+                    </form>
+                </div>
+
+                <div class="map-wrapper">
+                    <div id="map" aria-label="Hamburg Karte"></div>
+                </div>
+
+                <p id="subtitleText" class="subtitle"></p>
+                <div id="output" class="result is-hidden" aria-live="polite"></div>
+            </div>
+        </div>
+    </section>
+
+    <section id="score-strip" class="score-strip">
+        <h2>SCORE VERSTEHEN</h2>
+        <p>Ein SpotScore zwischen 0,1 und 10 macht sofort sichtbar, wie angenehm ein Ort gerade ist.</p>
+        <div class="score-band">
+            <span>RUHIGKEIT</span>
+            <span>TEMPERATUR</span>
+            <span>LUFTFEUCHTE</span>
+            <span>WIND</span>
+            <span>REGEN</span>
+        </div>
+    </section>
+
+    <section id="datenbasis" class="data-wall">
+        <h2>HAMBURGS DATENBASIS</h2>
+        <p>Urban Data trifft Live-Wetter: transparent, nachvollziehbar und direkt im Kartenkontext.</p>
+        <div class="data-pills">
+            <span>API Hamburg · Straßenverkehr</span>
+            <span>Netatmo · Öffentliche Stationen</span>
+            <span>Open-Meteo · Stadtmittelwerte</span>
+            <span>Geodaten · Hamburg-Grenzen</span>
+        </div>
+    </section>
 </div>
 
 <script
