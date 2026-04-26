@@ -74,7 +74,7 @@ async function importSpotFromClipboard() {
             return;
         }
 
-        handlePointSelection(lat, lon);
+        handlePointSelection(lat, lon, { zoomToMax: true });
     } catch (error) {
         renderQueryError(error instanceof Error ? `Clipboard import failed: ${error.message}` : "Clipboard import failed.");
     }
@@ -96,8 +96,10 @@ function parseCoordinatesFromClipboard(rawText) {
 
     return { lat, lon };
 }
-async function handlePointSelection(lat, lon) {
+async function handlePointSelection(lat, lon, options = {}) {
     if (!map) return;
+
+    const { zoomToMax = false } = options;
 
     if (!isWithinBounds(lat, lon)) {
         renderQueryError("Selected coordinates are outside the configured Hamburg bounds.");
@@ -105,7 +107,7 @@ async function handlePointSelection(lat, lon) {
     }
 
     clearUsedStationsLayer();
-    placeQueryMarker(lat, lon);
+    placeQueryMarker(lat, lon, { zoomToMax });
     showLoadingOutput("Loading noise and nearest weather data for selected marker...");
 
     try {
@@ -120,8 +122,10 @@ async function handlePointSelection(lat, lon) {
     }
 }
 
-function placeQueryMarker(lat, lon) {
+function placeQueryMarker(lat, lon, options = {}) {
     if (!map) return;
+
+    const { zoomToMax = false } = options;
 
     if (queryMarker) {
         map.removeLayer(queryMarker);
@@ -130,7 +134,61 @@ function placeQueryMarker(lat, lon) {
     queryMarker = L.marker([lat, lon]).addTo(map);
     queryMarker.bindPopup(`<strong>Selected marker</strong><br/>Lat: ${lat.toFixed(5)}<br/>Lon: ${lon.toFixed(5)}`);
     queryMarker.openPopup();
-    map.panTo([lat, lon]);
+
+    if (zoomToMax) {
+        animateZoomToMaxAtSpot(lat, lon);
+        return;
+    }
+
+    panToVisibleMapCenter(lat, lon);
+}
+
+function animateZoomToMaxAtSpot(lat, lon) {
+    if (!map) return;
+
+    const targetCenter = getVisibleCenterForSpot(lat, lon, MAX_ZOOM);
+    map.flyTo(targetCenter, MAX_ZOOM, {
+        animate: true,
+        duration: 0.9
+    });
+}
+
+function panToVisibleMapCenter(lat, lon) {
+    if (!map) return;
+
+    const targetCenter = getVisibleCenterForSpot(lat, lon, map.getZoom());
+    map.panTo(targetCenter, { animate: true });
+}
+
+function getVisibleCenterForSpot(lat, lon, zoomLevel) {
+    if (!map) return L.latLng(lat, lon);
+
+    const mapSize = map.getSize();
+    const sidebarWidth = getSidebarWidth();
+
+    if (sidebarWidth <= 0) {
+        return L.latLng(lat, lon);
+    }
+
+    const screenCenter = L.point(mapSize.x / 2, mapSize.y / 2);
+    const visibleCenterX = Math.min(mapSize.x - 20, mapSize.x / 2 + sidebarWidth / 2);
+    const desiredSpotPoint = L.point(visibleCenterX, mapSize.y / 2);
+    const offsetFromCenter = desiredSpotPoint.subtract(screenCenter);
+
+    const spotPointAtZoom = map.project(L.latLng(lat, lon), zoomLevel);
+    const targetCenterPoint = spotPointAtZoom.subtract(offsetFromCenter);
+    return map.unproject(targetCenterPoint, zoomLevel);
+}
+
+function getSidebarWidth() {
+    const sidebar = document.querySelector(".app");
+    if (!sidebar) return 0;
+
+    const mapSize = map?.getSize();
+    if (!mapSize) return 0;
+
+    const sidebarRect = sidebar.getBoundingClientRect();
+    return Math.min(sidebarRect.width, Math.max(0, mapSize.x - 20));
 }
 
 function clearUsedStationsLayer() {

@@ -15,7 +15,9 @@
 
 <body>
 
-<div class="app">
+<div id="map" aria-label="Hamburg map background"></div>
+
+<aside class="app" aria-label="Spot score sidebar">
     <h2>Hamburg Map Explorer</h2>
     <p id="subtitleText" class="subtitle">Pick a spot (map click or clipboard import) to see that location and the weather stations used for scoring.</p>
 
@@ -24,13 +26,8 @@
         <p class="hint">Copy coordinates to clipboard (e.g. <code>53.5511, 9.9937</code>, <code>53.5511;9.9937</code> or <code>53.5511 9.9937</code>) and click Import Spot. You can also click directly on the map.</p>
     </div>
 
-    <div class="map-wrapper">
-        <h3>Map View</h3>
-        <div id="map" aria-label="Hamburg map view"></div>
-    </div>
-
     <div id="output" class="result is-hidden" aria-live="polite"></div>
-</div>
+</aside>
 
 <script
     src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
