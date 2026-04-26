@@ -20,10 +20,8 @@ let queryMarker;
 
 document.addEventListener("DOMContentLoaded", () => {
     const form = document.getElementById("mapForm");
-    const coordinateForm = document.getElementById("coordinateForm");
+    const importSpotBtn = document.getElementById("importSpotBtn");
     const modeSelect = document.getElementById("mapModeSelect");
-    const latitudeInput = document.getElementById("latitudeInput");
-    const longitudeInput = document.getElementById("longitudeInput");
 
     hideOutput();
 
@@ -34,18 +32,9 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
-    if (coordinateForm) {
-        coordinateForm.addEventListener("submit", (event) => {
-            event.preventDefault();
-            const lat = Number(latitudeInput?.value);
-            const lon = Number(longitudeInput?.value);
-
-            if (!isValidCoordinates(lat, lon)) {
-                renderQueryError("Please enter valid coordinates.");
-                return;
-            }
-
-            handlePointSelection(lat, lon);
+    if (importSpotBtn) {
+        importSpotBtn.addEventListener("click", () => {
+            importSpotFromClipboard();
         });
     }
 
@@ -79,9 +68,55 @@ function initMap() {
 
     map.on("click", (event) => {
         const { lat, lng } = event.latlng;
-        syncCoordinateInputs(lat, lng);
         handlePointSelection(lat, lng);
     });
+}
+
+async function importSpotFromClipboard() {
+    if (!navigator?.clipboard?.readText) {
+        renderQueryError("Clipboard access is not available in this browser context. Please click on the map to select a spot.");
+        return;
+    }
+
+    showLoadingOutput("Reading coordinates from clipboard...");
+
+    try {
+        const clipboardText = await navigator.clipboard.readText();
+        const parsedCoordinates = parseCoordinatesFromClipboard(clipboardText);
+
+        if (!parsedCoordinates) {
+            renderQueryError("Could not parse coordinates from clipboard. Use one of: lat,lon · lat;lon · lat lon");
+            return;
+        }
+
+        const { lat, lon } = parsedCoordinates;
+
+        if (!isValidCoordinates(lat, lon)) {
+            renderQueryError("Please provide valid numeric coordinates.");
+            return;
+        }
+
+        handlePointSelection(lat, lon);
+    } catch (error) {
+        renderQueryError(error instanceof Error ? `Clipboard import failed: ${error.message}` : "Clipboard import failed.");
+    }
+}
+
+function parseCoordinatesFromClipboard(rawText) {
+    if (typeof rawText !== "string") return null;
+
+    const cleanedText = rawText.trim().replace(/[()\[\]]/g, "");
+    if (!cleanedText) return null;
+
+    const match = cleanedText.match(/^\s*(-?\d+(?:\.\d+)?)\s*[,;\s]\s*(-?\d+(?:\.\d+)?)\s*$/);
+    if (!match) return null;
+
+    const lat = Number(match[1]);
+    const lon = Number(match[2]);
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+
+    return { lat, lon };
 }
 
 function loadSelectedMode() {
@@ -355,13 +390,6 @@ function showOutput() {
     const output = document.getElementById("output");
     if (!output) return;
     output.classList.remove("is-hidden");
-}
-
-function syncCoordinateInputs(lat, lon) {
-    const latitudeInput = document.getElementById("latitudeInput");
-    const longitudeInput = document.getElementById("longitudeInput");
-    if (latitudeInput) latitudeInput.value = String(lat.toFixed(6));
-    if (longitudeInput) longitudeInput.value = String(lon.toFixed(6));
 }
 
 function isValidCoordinates(lat, lon) {
