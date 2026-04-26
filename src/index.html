@@ -17,21 +17,11 @@
 
 <div class="app">
     <h2>Hamburg Map Explorer</h2>
-    <p id="subtitleText" class="subtitle">Select a map mode to load either Lden noise data or Netatmo weather stations.</p>
-
-    <form id="mapForm">
-        <label for="mapModeSelect">Map mode</label>
-        <select id="mapModeSelect">
-            <option value="noise" selected>Lden noise map</option>
-            <option value="weather">Netatmo weather map</option>
-        </select>
-
-        <button id="searchBtn" type="submit">Load selected map</button>
-    </form>
+    <p id="subtitleText" class="subtitle">Pick a spot (map click or clipboard import) to see that location and the weather stations used for scoring.</p>
 
     <div class="import-spot-controls">
         <button id="importSpotBtn" type="button">Import Spot</button>
-        <p class="hint">Copy coordinates to clipboard (e.g. <code>53.5511, 9.9937</code>) and click Import Spot. You can also click directly on the map.</p>
+        <p class="hint">Copy coordinates to clipboard (e.g. <code>53.5511, 9.9937</code>, <code>53.5511;9.9937</code> or <code>53.5511 9.9937</code>) and click Import Spot. You can also click directly on the map.</p>
     </div>
 
     <div class="map-wrapper">

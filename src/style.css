@@ -21,11 +21,6 @@ body {
     font-size: 0.95rem;
 }
 
-#mapForm {
-    display: grid;
-    gap: 8px;
-}
-
 .import-spot-controls {
     display: grid;
     gap: 8px;
@@ -134,39 +129,4 @@ button {
     height: 340px;
     border: 1px solid #e5e7eb;
     border-radius: 10px;
-}
-
-.map-legend {
-    background: rgba(255, 255, 255, 0.95);
-    border: 1px solid #d1d5db;
-    border-radius: 8px;
-    padding: 10px;
-    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.15);
-    min-width: 150px;
-    font-size: 0.85rem;
-    line-height: 1.35;
-}
-
-.map-legend h4 {
-    margin: 0 0 8px;
-    font-size: 0.9rem;
-}
-
-.legend-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 4px;
-}
-
-.legend-item:last-child {
-    margin-bottom: 0;
-}
-
-.legend-color {
-    width: 14px;
-    height: 14px;
-    border-radius: 3px;
-    border: 1px solid rgba(0, 0, 0, 0.15);
-    flex-shrink: 0;
 }

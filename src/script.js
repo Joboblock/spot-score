@@ -1,9 +1,5 @@
 import { buildSpotScores, TEMP_OPTIMAL_C } from "./utils.js";
-import {
-    fetchNoiseMapData,
-    fetchPointSelectionData,
-    fetchWeatherStationsWithinRadius
-} from "./data-api.js";
+import { fetchPointSelectionData } from "./data-api.js";
 
 const DEFAULT_CENTER = [53.5511, 9.9937];
 const DEFAULT_ZOOM = 11;
@@ -14,36 +10,18 @@ const HAMBURG_BOUNDS = [
     [53.72838568700598, 10.29272015751267]
 ];
 let map;
-let activeLayer;
-let legendControl;
 let queryMarker;
+let usedStationsLayer;
 
 document.addEventListener("DOMContentLoaded", () => {
-    const form = document.getElementById("mapForm");
     const importSpotBtn = document.getElementById("importSpotBtn");
-    const modeSelect = document.getElementById("mapModeSelect");
 
     hideOutput();
-
-    if (form) {
-        form.addEventListener("submit", (event) => {
-            event.preventDefault();
-            loadSelectedMode();
-        });
-    }
 
     if (importSpotBtn) {
         importSpotBtn.addEventListener("click", () => {
             importSpotFromClipboard();
         });
-    }
-
-    if (modeSelect) {
-        modeSelect.addEventListener("change", () => {
-            updateSubtitle(modeSelect.value);
-            loadSelectedMode();
-        });
-        updateSubtitle(modeSelect.value);
     }
 
     initMap();
@@ -118,142 +96,6 @@ function parseCoordinatesFromClipboard(rawText) {
 
     return { lat, lon };
 }
-
-function loadSelectedMode() {
-    const mode = document.getElementById("mapModeSelect")?.value ?? "noise";
-
-    if (mode === "weather") {
-        loadWeatherData();
-        return;
-    }
-
-    loadNoiseData();
-}
-
-function updateSubtitle(mode) {
-    const subtitle = document.getElementById("subtitleText");
-    if (!subtitle) return;
-
-    subtitle.innerHTML =
-        mode === "weather"
-            ? "Source: Netatmo <code>/getpublicdata</code> for public stations in Hamburg"
-            : "Source: API Hamburg <code>strassenverkehr</code>, collection <code>strassenverkehr_tag_abend_nacht_2022</code> (Lden)";
-}
-
-async function loadWeatherData() {
-    clearMapLayer();
-
-    try {
-        const focus = getWeatherFocusPoint();
-        const stations = await fetchWeatherStationsWithinRadius(focus.lat, focus.lon);
-        renderWeatherMap(stations);
-    } catch (error) {
-        renderQueryError(error instanceof Error ? error.message : "Failed to load weather data.");
-        clearMapLayer();
-    }
-}
-
-async function loadNoiseData() {
-    clearMapLayer();
-
-    try {
-        const data = await fetchNoiseMapData();
-        renderNoiseMap(data);
-    } catch (error) {
-        renderQueryError(error instanceof Error ? error.message : "Failed to load noise data.");
-        clearMapLayer();
-    }
-}
-
-function clearMapLayer() {
-    if (map && activeLayer) {
-        map.removeLayer(activeLayer);
-    }
-    activeLayer = null;
-
-    if (map && legendControl) {
-        map.removeControl(legendControl);
-    }
-    legendControl = null;
-}
-
-function renderWeatherMap(stations) {
-    if (!map) return;
-
-    if (stations.length === 0) return;
-
-    activeLayer = L.featureGroup(
-        stations.map((station) => {
-            const marker = L.circleMarker([station.lat, station.lon], {
-                radius: 8,
-                color: "#ffffff",
-                weight: 1.2,
-                fillColor: getTemperatureColor(station.temperature),
-                fillOpacity: 0.9
-            });
-
-            marker.bindPopup(
-                `<strong>${station.city}</strong><br/>` +
-                    `<strong>Street:</strong> ${station.street}<br/>` +
-                    `<strong>Temperature:</strong> ${formatValue(station.temperature, "°C")}<br/>` +
-                    `<strong>Humidity:</strong> ${formatValue(station.humidity, "%")}<br/>` +
-                    `<strong>Pressure:</strong> ${formatValue(station.pressure, "mbar")}<br/>` +
-                    `<strong>Rain (24h):</strong> ${formatValue(station.rain24h, "mm")}<br/>` +
-                    `<strong>Wind:</strong> ${formatValue(station.windStrength, "km/h")}<br/>` +
-                    `<strong>Updated:</strong> ${new Date(station.timestamp * 1000).toLocaleString()}`
-            );
-
-            return marker;
-        })
-    ).addTo(map);
-
-    updateWeatherLegend();
-
-    const bounds = activeLayer.getBounds();
-    if (bounds.isValid()) {
-        map.fitBounds(bounds.pad(0.05), { maxZoom: 14 });
-    }
-}
-
-function renderNoiseMap(data) {
-    if (!map) return;
-
-    const features = data?.features ?? [];
-    const mapFeatures = features.filter((feature) => feature?.geometry);
-
-    if (mapFeatures.length === 0) return;
-
-    activeLayer = L.geoJSON(
-        {
-            type: "FeatureCollection",
-            features: mapFeatures
-        },
-        {
-            style: (feature) => {
-                const klasse = feature?.properties?.klasse ?? "Unknown";
-                return {
-                    color: "#ffffff",
-                    weight: 0.6,
-                    fillColor: getKlasseColor(klasse),
-                    fillOpacity: 0.75
-                };
-            },
-            onEachFeature: (feature, layer) => {
-                const klasse = feature?.properties?.klasse ?? "Unknown";
-                layer.bindPopup(`<strong>Noise class:</strong> ${klasse}<br/><strong>Mode:</strong> Lden`);
-            }
-        }
-    ).addTo(map);
-
-    updateNoiseLegend(mapFeatures);
-
-    const bounds = activeLayer.getBounds();
-    if (bounds.isValid()) {
-        map.fitBounds(bounds.pad(0.05), { maxZoom: 14 });
-    }
-}
-
-
 async function handlePointSelection(lat, lon) {
     if (!map) return;
 
@@ -262,6 +104,7 @@ async function handlePointSelection(lat, lon) {
         return;
     }
 
+    clearUsedStationsLayer();
     placeQueryMarker(lat, lon);
     showLoadingOutput("Loading noise and nearest weather data for selected marker...");
 
@@ -269,8 +112,10 @@ async function handlePointSelection(lat, lon) {
         const { noiseInfo, weatherSelection, cityTemperatureStats } =
             await fetchPointSelectionData(lat, lon, HAMBURG_BOUNDS);
 
+        renderUsedStationsOnMap(weatherSelection?.usedStations ?? []);
         renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatureStats);
     } catch (error) {
+        clearUsedStationsLayer();
         renderQueryError(error instanceof Error ? error.message : "Failed to load marker data.");
     }
 }
@@ -288,17 +133,41 @@ function placeQueryMarker(lat, lon) {
     map.panTo([lat, lon]);
 }
 
-function getWeatherFocusPoint() {
-    if (queryMarker) {
-        const markerPosition = queryMarker.getLatLng();
-        return { lat: markerPosition.lat, lon: markerPosition.lng };
-    }
+function clearUsedStationsLayer() {
+    if (!map || !usedStationsLayer) return;
+    map.removeLayer(usedStationsLayer);
+    usedStationsLayer = null;
+}
 
-    const center = map?.getCenter();
-    return {
-        lat: center?.lat ?? DEFAULT_CENTER[0],
-        lon: center?.lng ?? DEFAULT_CENTER[1]
-    };
+function renderUsedStationsOnMap(usedStations) {
+    if (!map) return;
+
+    clearUsedStationsLayer();
+
+    if (!Array.isArray(usedStations) || usedStations.length === 0) return;
+
+    const stationMarkers = usedStations
+        .filter((station) => Number.isFinite(station?.lat) && Number.isFinite(station?.lon))
+        .map((station) => {
+            const marker = L.circleMarker([station.lat, station.lon], {
+                radius: 6,
+                color: "#ffffff",
+                weight: 1,
+                fillColor: "#0f62fe",
+                fillOpacity: 0.92
+            });
+
+            marker.bindPopup(
+                `<strong>Used weather station</strong><br/>` +
+                    `${station.street ?? station.city ?? "Unknown station"}<br/>` +
+                    `Distance: ${Number.isFinite(station.distanceKm) ? station.distanceKm.toFixed(3) : "n/a"} km`
+            );
+
+            return marker;
+        });
+
+    if (stationMarkers.length === 0) return;
+    usedStationsLayer = L.featureGroup(stationMarkers).addTo(map);
 }
 
 function renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatureStats) {
@@ -403,90 +272,6 @@ function isWithinBounds(lat, lon) {
         lon >= HAMBURG_BOUNDS[0][1] &&
         lon <= HAMBURG_BOUNDS[1][1]
     );
-}
-
-function getTemperatureColor(temperature) {
-    if (!Number.isFinite(temperature)) return "#9ca3af";
-    if (temperature <= 0) return "#1d4ed8";
-    if (temperature <= 5) return "#3b82f6";
-    if (temperature <= 10) return "#06b6d4";
-    if (temperature <= 15) return "#22c55e";
-    if (temperature <= 20) return "#f59e0b";
-    return "#ef4444";
-}
-
-function parseLowerDbBound(klasseLabel) {
-    const lowerBoundMatch = klasseLabel.match(/(\d+)\s*-\s*\d+/);
-    if (lowerBoundMatch) return Number(lowerBoundMatch[1]);
-
-    const atLeastMatch = klasseLabel.match(/>=\s*(\d+)/);
-    if (atLeastMatch) return Number(atLeastMatch[1]);
-
-    return 0;
-}
-
-function getKlasseColor(klasseLabel) {
-    const lowerDb = parseLowerDbBound(klasseLabel);
-
-    if (lowerDb >= 75) return "#7f0000";
-    if (lowerDb >= 70) return "#b30000";
-    if (lowerDb >= 65) return "#e34a33";
-    if (lowerDb >= 60) return "#fc8d59";
-    if (lowerDb >= 55) return "#fdbb84";
-    return "#fee8c8";
-}
-
-function updateWeatherLegend() {
-    if (!map) return;
-
-    if (legendControl) {
-        map.removeControl(legendControl);
-    }
-
-    legendControl = L.control({ position: "bottomright" });
-    legendControl.onAdd = () => {
-        const div = L.DomUtil.create("div", "map-legend");
-        div.innerHTML = `
-            <h4>Temperature scale</h4>
-            <div class="legend-item"><span class="legend-color" style="background:#1d4ed8"></span>≤ 0°C</div>
-            <div class="legend-item"><span class="legend-color" style="background:#3b82f6"></span>1–5°C</div>
-            <div class="legend-item"><span class="legend-color" style="background:#06b6d4"></span>6–10°C</div>
-            <div class="legend-item"><span class="legend-color" style="background:#22c55e"></span>11–15°C</div>
-            <div class="legend-item"><span class="legend-color" style="background:#f59e0b"></span>16–20°C</div>
-            <div class="legend-item"><span class="legend-color" style="background:#ef4444"></span>> 20°C</div>
-        `;
-        return div;
-    };
-
-    legendControl.addTo(map);
-}
-
-function updateNoiseLegend(features) {
-    if (!map) return;
-
-    if (legendControl) {
-        map.removeControl(legendControl);
-    }
-
-    const classes = [...new Set(features.map((feature) => feature?.properties?.klasse ?? "Unknown"))]
-        .sort((a, b) => parseLowerDbBound(a) - parseLowerDbBound(b));
-
-    legendControl = L.control({ position: "bottomright" });
-    legendControl.onAdd = () => {
-        const div = L.DomUtil.create("div", "map-legend");
-        div.innerHTML = `
-            <h4>Lden dB(A) levels</h4>
-            ${classes
-                .map(
-                    (klasse) =>
-                        `<div class="legend-item"><span class="legend-color" style="background:${getKlasseColor(klasse)}"></span>${klasse}</div>`
-                )
-                .join("")}
-        `;
-        return div;
-    };
-
-    legendControl.addTo(map);
 }
 
 function formatValue(value, unit) {
