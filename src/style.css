@@ -1,3 +1,8 @@
+:root {
+    --phi: 1.61803398875;
+    --sidebar-share: calc(1 / (var(--phi) + 1));
+}
+
 html,
 body {
     height: 100%;
@@ -14,7 +19,7 @@ body {
     position: relative;
     z-index: 2;
     height: 100vh;
-    width: min(520px, 92vw);
+    width: calc(100vw * var(--sidebar-share));
     padding: 24px 20px 28px;
     box-sizing: border-box;
     overflow-y: auto;
