@@ -50,10 +50,7 @@ body {
     padding: 16px;
     box-sizing: border-box;
     overflow-y: auto;
-    background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.08)),
-        var(--glass-light);
-    backdrop-filter: blur(18px);
+    backdrop-filter: blur(16px);
     border-right: 1px solid var(--border-light);
     box-shadow: var(--shadow-soft);
 }
@@ -62,6 +59,7 @@ body {
     display: grid;
     gap: 14px;
     min-height: 100%;
+    align-content: start;
 }
 
 .app-header,
@@ -80,6 +78,10 @@ body {
         linear-gradient(160deg, rgba(192, 237, 85, 0.18), rgba(255, 255, 255, 0.66) 48%, rgba(242, 233, 14, 0.18)),
         var(--color-soft-white);
     border-color: var(--border-light);
+}
+
+.app-header.is-hidden {
+    display: none;
 }
 
 .eyebrow {

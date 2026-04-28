@@ -26,7 +26,7 @@
                     <input
                         id="addressSearchInput"
                         type="search"
-                        placeholder="Type an address (e.g., Grindelallee)"
+                        placeholder="Search Spots..."
                         autocomplete="off"
                         aria-autocomplete="list"
                         aria-controls="addressSearchResults"
@@ -43,13 +43,8 @@
         <header class="app-header">
             <p class="eyebrow">Spot Score</p>
             <h1>Hamburg Map Explorer</h1>
-            <p id="subtitleText" class="subtitle">Pick a spot on the map or import coordinates from your clipboard to compare local weather signals and compute a location score.</p>
+            <p id="subtitleText" class="subtitle">Pick a spot on the map or search for an address to compare local weather signals and compute a location score.</p>
         </header>
-
-        <section class="import-spot-controls panel">
-            <button id="importSpotBtn" type="button">Import Spot</button>
-            <p class="hint">Copy coordinates to your clipboard, for example <code>53.5511, 9.9937</code>, then click Import Spot. You can also click directly on the map.</p>
-        </section>
 
         <div id="output" class="result is-hidden" aria-live="polite"></div>
     </div>

@@ -19,15 +19,7 @@ let addressSearchAbortController;
 let addressSearchTimeout;
 
 document.addEventListener("DOMContentLoaded", () => {
-    const importSpotBtn = document.getElementById("importSpotBtn");
-
     hideOutput();
-
-    if (importSpotBtn) {
-        importSpotBtn.addEventListener("click", () => {
-            importSpotFromClipboard();
-        });
-    }
 
     setupAddressSearch();
 
@@ -60,6 +52,7 @@ function initMap() {
 function setupAddressSearch() {
     const input = document.getElementById("addressSearchInput");
     const resultsList = document.getElementById("addressSearchResults");
+    const searchButton = document.querySelector(".search-btn");
 
     if (!input || !resultsList) return;
 
@@ -82,12 +75,33 @@ function setupAddressSearch() {
 
     input.addEventListener("input", triggerSearch);
     input.addEventListener("focus", triggerSearch);
+    const triggerFirstSuggestion = () => {
+        const firstSuggestion = resultsList.querySelector(".suggestion-btn");
+
+        if (firstSuggestion) {
+            firstSuggestion.click();
+            return;
+        }
+
+        attemptCoordinateFallback(input.value, resultsList);
+    };
+
     input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            triggerFirstSuggestion();
+            return;
+        }
+
         if (event.key === "Escape") {
             input.value = "";
             clearAddressSuggestions(resultsList);
         }
     });
+
+    if (searchButton) {
+        searchButton.addEventListener("click", triggerFirstSuggestion);
+    }
 }
 
 async function loadAddressSuggestions(query, resultsList, input) {
@@ -117,7 +131,9 @@ function renderAddressSuggestions(resultsList, input, suggestions) {
     resultsList.innerHTML = "";
 
     if (!suggestions.length) {
-        setSuggestionMessage(resultsList, "No matches yet.");
+        if (!attemptCoordinateFallback(input.value, resultsList)) {
+            setSuggestionMessage(resultsList, "No matches yet.");
+        }
         return;
     }
 
@@ -129,22 +145,22 @@ function renderAddressSuggestions(resultsList, input, suggestions) {
         button.className = "suggestion-btn";
         button.setAttribute("role", "option");
 
-    const iconSpan = document.createElement("span");
-    iconSpan.className = "suggestion-icon";
+        const iconSpan = document.createElement("span");
+        iconSpan.className = "suggestion-icon";
 
-    const contentWrapper = document.createElement("span");
-    contentWrapper.className = "suggestion-content";
+        const contentWrapper = document.createElement("span");
+        contentWrapper.className = "suggestion-content";
 
-    const labelSpan = document.createElement("span");
-    labelSpan.className = "suggestion-title";
-    labelSpan.textContent = suggestion.label;
+        const labelSpan = document.createElement("span");
+        labelSpan.className = "suggestion-title";
+        labelSpan.textContent = suggestion.label;
 
-    const metaSpan = document.createElement("span");
-    metaSpan.className = "suggestion-meta";
-    metaSpan.textContent = suggestion.typeLabel;
+        const metaSpan = document.createElement("span");
+        metaSpan.className = "suggestion-meta";
+        metaSpan.textContent = suggestion.typeLabel;
 
-    contentWrapper.append(labelSpan, metaSpan);
-    button.append(iconSpan, contentWrapper);
+        contentWrapper.append(labelSpan, metaSpan);
+        button.append(iconSpan, contentWrapper);
         button.addEventListener("click", () => {
             input.value = suggestion.label;
             clearAddressSuggestions(resultsList);
@@ -176,37 +192,15 @@ function setSuggestionMessage(resultsList, message) {
     resultsList.classList.remove("is-hidden");
 }
 
-async function importSpotFromClipboard() {
-    if (!navigator?.clipboard?.readText) {
-        renderQueryError("Clipboard access is not available in this browser context. Please click on the map to select a spot.");
-        return;
-    }
+function hideAppHeader() {
+    const header = document.querySelector(".app-header");
 
-    showLoadingOutput("Reading coordinates from clipboard...");
-
-    try {
-        const clipboardText = await navigator.clipboard.readText();
-        const parsedCoordinates = parseCoordinatesFromClipboard(clipboardText);
-
-        if (!parsedCoordinates) {
-            renderQueryError("Could not parse coordinates from clipboard. Use one of: lat,lon · lat;lon · lat lon");
-            return;
-        }
-
-        const { lat, lon } = parsedCoordinates;
-
-        if (!isValidCoordinates(lat, lon)) {
-            renderQueryError("Please provide valid numeric coordinates.");
-            return;
-        }
-
-        handlePointSelection(lat, lon, { zoomToMax: true });
-    } catch (error) {
-        renderQueryError(error instanceof Error ? `Clipboard import failed: ${error.message}` : "Clipboard import failed.");
+    if (header) {
+        header.classList.add("is-hidden");
     }
 }
 
-function parseCoordinatesFromClipboard(rawText) {
+function parseCoordinatesFromInput(rawText) {
     if (typeof rawText !== "string") return null;
 
     const cleanedText = rawText.trim().replace(/[()\[\]]/g, "");
@@ -222,6 +216,27 @@ function parseCoordinatesFromClipboard(rawText) {
 
     return { lat, lon };
 }
+
+function attemptCoordinateFallback(rawInput, resultsList) {
+    const parsedCoordinates = parseCoordinatesFromInput(rawInput);
+
+    if (!parsedCoordinates) {
+        return false;
+    }
+
+    const { lat, lon } = parsedCoordinates;
+
+    if (!isValidCoordinates(lat, lon)) {
+        if (resultsList) {
+            setSuggestionMessage(resultsList, "Coordinates are outside the supported range.");
+        }
+        return true;
+    }
+
+    clearAddressSuggestions(resultsList);
+    handlePointSelection(lat, lon, { zoomToMax: true });
+    return true;
+}
 async function handlePointSelection(lat, lon, options = {}) {
     if (!map) return;
 
@@ -231,6 +246,8 @@ async function handlePointSelection(lat, lon, options = {}) {
         renderQueryError("Selected coordinates are outside the configured Hamburg bounds.");
         return;
     }
+
+    hideAppHeader();
 
     clearUsedStationsLayer();
     placeQueryMarker(lat, lon, { zoomToMax });
