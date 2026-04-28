@@ -4,6 +4,7 @@ import { TEMP_OPTIMAL_C } from "./utils.js";
 const WEATHER_BASE_URL = "https://api.netatmo.com/api/getpublicdata";
 const OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v1/forecast";
 const NOISE_BASE_URL = "https://api.hamburg.de/datasets/v1/strassenverkehr";
+const ADDRESS_SEARCH_URL = "https://api.hamburg.de/addr_search";
 const LDEN_COLLECTION = "strassenverkehr_tag_abend_nacht_2022";
 const NETATMO_NEAREST_COUNT = 3;
 const NETATMO_RADIUS_KM = 1;
@@ -76,6 +77,53 @@ export async function fetchPointSelectionData(lat, lon, hamburgBounds) {
         weatherSelection,
         cityTemperatureStats
     };
+}
+
+export async function fetchAddressSuggestions(query, options = {}) {
+    const { limit = 5, signal } = options;
+    const response = await fetch(ADDRESS_SEARCH_URL, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            id: "addr_search",
+            params: {
+                query_str: query,
+                size: limit
+            }
+        }),
+        signal
+    });
+
+    if (!response.ok) {
+        throw new Error(`Address search failed (HTTP ${response.status}).`);
+    }
+
+    const data = await response.json();
+    const hits = data?.hits?.hits ?? [];
+
+    return hits
+        .map((hit) => {
+            const source = hit?._source ?? {};
+            const coords = source?.geometry?.coordinates ?? [];
+            const [lon, lat] = coords;
+            const properties = source?.properties ?? {};
+            const label = properties.searchfield ?? "";
+            const typeLabel = properties.type ?? source.type ?? "Address";
+
+            if (!label || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+
+            return {
+                id: source?.id ?? hit?._id ?? label,
+                label,
+                typeLabel,
+                lat,
+                lon
+            };
+        })
+        .filter(Boolean)
+        .slice(0, limit);
 }
 
 async function fetchNoiseInfoForPoint(lat, lon) {

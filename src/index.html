@@ -19,6 +19,20 @@
 
 <aside class="app" aria-label="Spot score sidebar">
     <div class="app-shell">
+        <section class="address-search panel">
+            <label class="field-label" for="addressSearchInput">Search address</label>
+            <div class="field-control">
+                <input
+                    id="addressSearchInput"
+                    type="search"
+                    placeholder="Type an address (e.g., Grindelallee)"
+                    autocomplete="off"
+                    aria-autocomplete="list"
+                    aria-controls="addressSearchResults"
+                />
+            </div>
+            <ul id="addressSearchResults" class="suggestion-list is-hidden" role="listbox" aria-label="Address suggestions"></ul>
+        </section>
         <header class="app-header">
             <p class="eyebrow">Spot Score</p>
             <h1>Hamburg Map Explorer</h1>

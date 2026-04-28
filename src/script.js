@@ -1,10 +1,13 @@
 import { buildSpotScores, TEMP_OPTIMAL_C } from "./utils.js";
-import { fetchPointSelectionData } from "./data-api.js";
+import { fetchAddressSuggestions, fetchPointSelectionData } from "./data-api.js";
 
 const DEFAULT_CENTER = [53.5511, 9.9937];
 const DEFAULT_ZOOM = 11;
 const MIN_ZOOM = 10;
 const MAX_ZOOM = 16;
+const ADDRESS_SEARCH_MIN_CHARS = 3;
+const ADDRESS_SEARCH_LIMIT = 5;
+const ADDRESS_SEARCH_DEBOUNCE_MS = 250;
 const HAMBURG_BOUNDS = [
     [53.41062884725186, 9.732240484945219],
     [53.72838568700598, 10.29272015751267]
@@ -12,6 +15,8 @@ const HAMBURG_BOUNDS = [
 let map;
 let queryMarker;
 let usedStationsLayer;
+let addressSearchAbortController;
+let addressSearchTimeout;
 
 document.addEventListener("DOMContentLoaded", () => {
     const importSpotBtn = document.getElementById("importSpotBtn");
@@ -23,6 +28,8 @@ document.addEventListener("DOMContentLoaded", () => {
             importSpotFromClipboard();
         });
     }
+
+    setupAddressSearch();
 
     initMap();
 });
@@ -48,6 +55,117 @@ function initMap() {
         const { lat, lng } = event.latlng;
         handlePointSelection(lat, lng);
     });
+}
+
+function setupAddressSearch() {
+    const input = document.getElementById("addressSearchInput");
+    const resultsList = document.getElementById("addressSearchResults");
+
+    if (!input || !resultsList) return;
+
+    const triggerSearch = () => {
+        const query = input.value.trim();
+
+        if (query.length < ADDRESS_SEARCH_MIN_CHARS) {
+            clearAddressSuggestions(resultsList);
+            return;
+        }
+
+        if (addressSearchTimeout) {
+            window.clearTimeout(addressSearchTimeout);
+        }
+
+        addressSearchTimeout = window.setTimeout(() => {
+            loadAddressSuggestions(query, resultsList, input);
+        }, ADDRESS_SEARCH_DEBOUNCE_MS);
+    };
+
+    input.addEventListener("input", triggerSearch);
+    input.addEventListener("focus", triggerSearch);
+    input.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+            input.value = "";
+            clearAddressSuggestions(resultsList);
+        }
+    });
+}
+
+async function loadAddressSuggestions(query, resultsList, input) {
+    if (addressSearchAbortController) {
+        addressSearchAbortController.abort();
+    }
+
+    addressSearchAbortController = new AbortController();
+
+    try {
+        const suggestions = await fetchAddressSuggestions(query, {
+            limit: ADDRESS_SEARCH_LIMIT,
+            signal: addressSearchAbortController.signal
+        });
+
+        if (addressSearchAbortController.signal.aborted) return;
+        renderAddressSuggestions(resultsList, input, suggestions);
+    } catch (error) {
+        if (error?.name === "AbortError") return;
+        if (!hasVisibleSuggestions(resultsList)) {
+            setSuggestionMessage(resultsList, "Unable to load address suggestions.");
+        }
+    }
+}
+
+function renderAddressSuggestions(resultsList, input, suggestions) {
+    resultsList.innerHTML = "";
+
+    if (!suggestions.length) {
+        setSuggestionMessage(resultsList, "No matches yet.");
+        return;
+    }
+
+    suggestions.forEach((suggestion) => {
+        const listItem = document.createElement("li");
+        const button = document.createElement("button");
+
+        button.type = "button";
+        button.className = "suggestion-btn";
+        button.setAttribute("role", "option");
+
+        const labelSpan = document.createElement("span");
+        labelSpan.textContent = suggestion.label;
+
+        const metaSpan = document.createElement("span");
+        metaSpan.className = "suggestion-meta";
+        metaSpan.textContent = suggestion.typeLabel;
+
+        button.append(labelSpan, metaSpan);
+        button.addEventListener("click", () => {
+            input.value = suggestion.label;
+            clearAddressSuggestions(resultsList);
+            handlePointSelection(suggestion.lat, suggestion.lon, { zoomToMax: true });
+        });
+
+        listItem.append(button);
+        resultsList.append(listItem);
+    });
+
+    resultsList.classList.remove("is-hidden");
+}
+
+function clearAddressSuggestions(resultsList) {
+    resultsList.innerHTML = "";
+    resultsList.classList.add("is-hidden");
+}
+
+function hasVisibleSuggestions(resultsList) {
+    return resultsList.children.length > 0 && !resultsList.classList.contains("is-hidden");
+}
+
+function setSuggestionMessage(resultsList, message) {
+    resultsList.innerHTML = "";
+    const listItem = document.createElement("li");
+    listItem.className = "suggestion-message";
+    listItem.textContent = message;
+    resultsList.append(listItem);
+    resultsList.classList.remove("is-hidden");
 }
 
 async function importSpotFromClipboard() {
