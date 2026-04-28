@@ -5,6 +5,8 @@ const WEATHER_BASE_URL = "https://api.netatmo.com/api/getpublicdata";
 const OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v1/forecast";
 const NOISE_BASE_URL = "https://api.hamburg.de/datasets/v1/strassenverkehr";
 const ADDRESS_SEARCH_URL = "https://api.hamburg.de/addr_search";
+const NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse";
+
 const LDEN_COLLECTION = "strassenverkehr_tag_abend_nacht_2022";
 const NETATMO_NEAREST_COUNT = 3;
 const NETATMO_RADIUS_KM = 1;
@@ -124,6 +126,28 @@ export async function fetchAddressSuggestions(query, options = {}) {
         })
         .filter(Boolean)
         .slice(0, limit);
+}
+
+export async function fetchAddressLabelForCoordinates(lat, lon) {
+    try {
+        const params = new URLSearchParams({
+            format: "jsonv2",
+            lat: String(lat),
+            lon: String(lon),
+            zoom: "18",
+            addressdetails: "1"
+        });
+        const response = await fetch(`${NOMINATIM_REVERSE_URL}?${params.toString()}`);
+        if (!response.ok) return null;
+        const data = await response.json();
+        const address = data?.address ?? {};
+        const line1 = [address.road, address.house_number].filter(Boolean).join(" ");
+        const displayName = data?.display_name ?? "";
+        const fallback = displayName.split(",")[0]?.trim();
+        return line1 || fallback || null;
+    } catch (error) {
+        return null;
+    }
 }
 
 async function fetchNoiseInfoForPoint(lat, lon) {

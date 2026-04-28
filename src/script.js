@@ -1,5 +1,9 @@
 import { buildSpotScores, TEMP_OPTIMAL_C } from "./utils.js";
-import { fetchAddressSuggestions, fetchPointSelectionData } from "./data-api.js";
+import {
+    fetchAddressLabelForCoordinates,
+    fetchAddressSuggestions,
+    fetchPointSelectionData
+} from "./data-api.js";
 
 const DEFAULT_CENTER = [53.5511, 9.9937];
 const DEFAULT_ZOOM = 11;
@@ -164,7 +168,10 @@ function renderAddressSuggestions(resultsList, input, suggestions) {
         button.addEventListener("click", () => {
             input.value = suggestion.label;
             clearAddressSuggestions(resultsList);
-            handlePointSelection(suggestion.lat, suggestion.lon, { zoomToMax: true });
+            handlePointSelection(suggestion.lat, suggestion.lon, {
+                zoomToMax: true,
+                addressLabel: suggestion.label
+            });
         });
 
         listItem.append(button);
@@ -240,7 +247,7 @@ function attemptCoordinateFallback(rawInput, resultsList) {
 async function handlePointSelection(lat, lon, options = {}) {
     if (!map) return;
 
-    const { zoomToMax = false } = options;
+    const { zoomToMax = false, addressLabel = null } = options;
 
     if (!isWithinBounds(lat, lon)) {
         renderQueryError("Selected coordinates are outside the configured Hamburg bounds.");
@@ -250,7 +257,7 @@ async function handlePointSelection(lat, lon, options = {}) {
     hideAppHeader();
 
     clearUsedStationsLayer();
-    placeQueryMarker(lat, lon, { zoomToMax });
+    placeQueryMarker(lat, lon, { zoomToMax, addressLabel });
     showLoadingOutput("Loading noise and nearest weather data for selected marker...");
 
     try {
@@ -268,15 +275,19 @@ async function handlePointSelection(lat, lon, options = {}) {
 function placeQueryMarker(lat, lon, options = {}) {
     if (!map) return;
 
-    const { zoomToMax = false } = options;
+    const { zoomToMax = false, addressLabel = null } = options;
 
     if (queryMarker) {
         map.removeLayer(queryMarker);
     }
 
     queryMarker = L.marker([lat, lon]).addTo(map);
-    queryMarker.bindPopup(`<strong>Selected marker</strong><br/>Lat: ${lat.toFixed(5)}<br/>Lon: ${lon.toFixed(5)}`);
+    queryMarker.bindPopup(buildMarkerPopupHtml(addressLabel ?? "Loading...", lat, lon));
     queryMarker.openPopup();
+
+    if (!addressLabel) {
+        updateMarkerAddressFromLookup(queryMarker, lat, lon);
+    }
 
     if (zoomToMax) {
         animateZoomToMaxAtSpot(lat, lon);
@@ -284,6 +295,18 @@ function placeQueryMarker(lat, lon, options = {}) {
     }
 
     panToVisibleMapCenter(lat, lon);
+}
+
+function buildMarkerPopupHtml(addressLabel, lat, lon) {
+    return `<strong>${addressLabel}</strong><br/>Lat: ${lat.toFixed(5)}<br/>Lon: ${lon.toFixed(5)}`;
+}
+
+async function updateMarkerAddressFromLookup(marker, lat, lon) {
+    const resolvedLabel = await fetchAddressLabelForCoordinates(lat, lon);
+
+    if (!resolvedLabel || marker !== queryMarker) return;
+
+    marker.setPopupContent(buildMarkerPopupHtml(resolvedLabel, lat, lon));
 }
 
 function animateZoomToMaxAtSpot(lat, lon) {
