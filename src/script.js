@@ -129,14 +129,22 @@ function renderAddressSuggestions(resultsList, input, suggestions) {
         button.className = "suggestion-btn";
         button.setAttribute("role", "option");
 
-        const labelSpan = document.createElement("span");
-        labelSpan.textContent = suggestion.label;
+    const iconSpan = document.createElement("span");
+    iconSpan.className = "suggestion-icon";
 
-        const metaSpan = document.createElement("span");
-        metaSpan.className = "suggestion-meta";
-        metaSpan.textContent = suggestion.typeLabel;
+    const contentWrapper = document.createElement("span");
+    contentWrapper.className = "suggestion-content";
 
-        button.append(labelSpan, metaSpan);
+    const labelSpan = document.createElement("span");
+    labelSpan.className = "suggestion-title";
+    labelSpan.textContent = suggestion.label;
+
+    const metaSpan = document.createElement("span");
+    metaSpan.className = "suggestion-meta";
+    metaSpan.textContent = suggestion.typeLabel;
+
+    contentWrapper.append(labelSpan, metaSpan);
+    button.append(iconSpan, contentWrapper);
         button.addEventListener("click", () => {
             input.value = suggestion.label;
             clearAddressSuggestions(resultsList);
