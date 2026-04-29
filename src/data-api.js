@@ -11,16 +11,27 @@ const LDEN_COLLECTION = "strassenverkehr_tag_abend_nacht_2022";
 const NETATMO_NEAREST_COUNT = 3;
 const NETATMO_RADIUS_KM = 1;
 const NOISE_RADIUS_KM = 1;
+const NOISE_PAGE_LIMIT = 1000;
+const NOISE_MAX_PAGE_COUNT = 25;
 const NETATMO_NEAREST_DISTANCE_FACTOR = 1.5;
 const DISTANCE_WEIGHT_MIN_KM = 0.05;
 const WEATHER_METRICS = ["temperature", "humidity", "windStrength", "rain24h"];
 const CITY_AVERAGE_SAMPLE_POINT_COUNT = 5;
 
-export async function fetchNoiseMapData() {
+let cachedNoiseFeatures = null;
+let cachedNoisePromise = null;
+
+export async function fetchNoiseMapData(options = {}) {
+    const { bbox, limit = NOISE_PAGE_LIMIT, offset = 0 } = options;
     const params = new URLSearchParams({
         f: "json",
-        limit: "100"
+        limit: String(limit),
+        offset: String(offset)
     });
+
+    if (bbox) {
+        params.set("bbox", bbox);
+    }
 
     const response = await fetch(
         `${NOISE_BASE_URL}/collections/${LDEN_COLLECTION}/items?${params.toString()}`
@@ -70,7 +81,7 @@ export async function fetchWeatherStationsWithinRadius(lat, lon, radiusKm = NETA
 
 export async function fetchPointSelectionData(lat, lon, hamburgBounds) {
     const [noiseInfo, weatherSelection, cityTemperatureStats] = await Promise.all([
-        fetchNoiseInfoForPoint(lat, lon),
+        fetchNoiseInfoForPoint(lat, lon, hamburgBounds),
         buildWeatherSelectionForPoint(lat, lon),
         fetchAverageCityTemperature(hamburgBounds).catch(() => null)
     ]);
@@ -151,31 +162,25 @@ export async function fetchAddressLabelForCoordinates(lat, lon) {
     }
 }
 
-// TODO: Point fetch api is broken, find alternative
-async function fetchNoiseInfoForPoint(lat, lon) {
-    const bbox = getBoundingBoxForRadius(lat, lon, NOISE_RADIUS_KM);
-    const params = new URLSearchParams({
-        f: "json",
-        limit: "300",
-        bbox: `${bbox.lonSw},${bbox.latSw},${bbox.lonNe},${bbox.latNe}`
-    });
-
-    const response = await fetch(
-        `${NOISE_BASE_URL}/collections/${LDEN_COLLECTION}/items?${params.toString()}`
-    );
-
-    if (!response.ok) {
-        throw new Error(`Could not load point noise data (HTTP ${response.status}).`);
-    }
-
-    const data = await response.json();
-    const features = data?.features ?? [];
+async function fetchNoiseInfoForPoint(lat, lon, hamburgBounds) {
+    const features = await fetchCachedHamburgNoise(hamburgBounds);
     if (features.length === 0) {
         return { klasse: "55-60", distanceKm: null };
     }
 
+    const searchBbox = getBoundingBoxForRadius(lat, lon, NOISE_RADIUS_KM);
+    const candidateFeatures = features.filter((feature) =>
+        isGeometryIntersectingBbox(feature?.geometry, searchBbox)
+    );
+
+    if (candidateFeatures.length === 0) {
+        return { klasse: "55-60", distanceKm: null };
+    }
+
     const point = { lat, lon };
-    const containingFeature = features.find((feature) => isPointInsideGeometry(point, feature?.geometry));
+    const containingFeature = candidateFeatures.find((feature) =>
+        isPointInsideGeometry(point, feature?.geometry)
+    );
 
     if (containingFeature) {
         return {
@@ -184,7 +189,7 @@ async function fetchNoiseInfoForPoint(lat, lon) {
         };
     }
 
-    const nearest = features
+    const nearest = candidateFeatures
         .map((feature) => {
             const center = geometryCenter(feature?.geometry);
             if (!center) return null;
@@ -202,6 +207,47 @@ async function fetchNoiseInfoForPoint(lat, lon) {
     }
 
     return nearest;
+}
+
+async function fetchCachedHamburgNoise(hamburgBounds) {
+    if (cachedNoiseFeatures) return cachedNoiseFeatures;
+
+    if (!cachedNoisePromise) {
+        cachedNoisePromise = loadHamburgNoiseFeatures(hamburgBounds)
+            .then((features) => {
+                cachedNoiseFeatures = features;
+                return features;
+            })
+            .catch((error) => {
+                cachedNoisePromise = null;
+                throw error;
+            });
+    }
+
+    return cachedNoisePromise;
+}
+
+async function loadHamburgNoiseFeatures(hamburgBounds) {
+    if (!Array.isArray(hamburgBounds) || hamburgBounds.length < 2) {
+        throw new Error("Hamburg bounds are required to load cached noise features.");
+    }
+
+    const [southWest, northEast] = hamburgBounds;
+    const bbox = `${southWest[1]},${southWest[0]},${northEast[1]},${northEast[0]}`;
+    const allFeatures = [];
+
+    for (let page = 0; page < NOISE_MAX_PAGE_COUNT; page += 1) {
+        const offset = page * NOISE_PAGE_LIMIT;
+        const data = await fetchNoiseMapData({ bbox, limit: NOISE_PAGE_LIMIT, offset });
+        const features = data?.features ?? [];
+        allFeatures.push(...features);
+
+        if (features.length < NOISE_PAGE_LIMIT) {
+            break;
+        }
+    }
+
+    return allFeatures;
 }
 
 async function buildWeatherSelectionForPoint(lat, lon) {
@@ -480,6 +526,34 @@ function geometryCenter(geometry) {
         lat: sums.lat / points.length,
         lon: sums.lon / points.length
     };
+}
+
+function isGeometryIntersectingBbox(geometry, bbox) {
+    if (!geometry || !bbox) return false;
+    const points = flattenGeometryCoordinates(geometry);
+    if (points.length === 0) return false;
+
+    const bounds = points.reduce(
+        (acc, [lon, lat]) => {
+            acc.minLat = Math.min(acc.minLat, lat);
+            acc.maxLat = Math.max(acc.maxLat, lat);
+            acc.minLon = Math.min(acc.minLon, lon);
+            acc.maxLon = Math.max(acc.maxLon, lon);
+            return acc;
+        },
+        { minLat: Infinity, maxLat: -Infinity, minLon: Infinity, maxLon: -Infinity }
+    );
+
+    if (!Number.isFinite(bounds.minLat) || !Number.isFinite(bounds.minLon)) return false;
+
+    const bboxMinLat = bbox.latSw;
+    const bboxMaxLat = bbox.latNe;
+    const bboxMinLon = bbox.lonSw;
+    const bboxMaxLon = bbox.lonNe;
+
+    const latOverlap = bounds.minLat <= bboxMaxLat && bounds.maxLat >= bboxMinLat;
+    const lonOverlap = bounds.minLon <= bboxMaxLon && bounds.maxLon >= bboxMinLon;
+    return latOverlap && lonOverlap;
 }
 
 function flattenGeometryCoordinates(geometry) {
