@@ -10,6 +10,7 @@ const NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse";
 const LDEN_COLLECTION = "strassenverkehr_tag_abend_nacht_2022";
 const NETATMO_NEAREST_COUNT = 3;
 const NETATMO_RADIUS_KM = 1;
+const NOISE_RADIUS_KM = 1;
 const NETATMO_NEAREST_DISTANCE_FACTOR = 1.5;
 const DISTANCE_WEIGHT_MIN_KM = 0.05;
 const WEATHER_METRICS = ["temperature", "humidity", "windStrength", "rain24h"];
@@ -150,12 +151,13 @@ export async function fetchAddressLabelForCoordinates(lat, lon) {
     }
 }
 
+// TODO: Point fetch api is broken, find alternative
 async function fetchNoiseInfoForPoint(lat, lon) {
-    const delta = 0.0007;
+    const bbox = getBoundingBoxForRadius(lat, lon, NOISE_RADIUS_KM);
     const params = new URLSearchParams({
         f: "json",
         limit: "300",
-        bbox: `${lon - delta},${lat - delta},${lon + delta},${lat + delta}`
+        bbox: `${bbox.lonSw},${bbox.latSw},${bbox.lonNe},${bbox.latNe}`
     });
 
     const response = await fetch(
@@ -169,7 +171,7 @@ async function fetchNoiseInfoForPoint(lat, lon) {
     const data = await response.json();
     const features = data?.features ?? [];
     if (features.length === 0) {
-        return { klasse: null, distanceKm: null };
+        return { klasse: "55-60", distanceKm: null };
     }
 
     const point = { lat, lon };
@@ -194,7 +196,12 @@ async function fetchNoiseInfoForPoint(lat, lon) {
         .filter(Boolean)
         .sort((a, b) => a.distanceKm - b.distanceKm)[0];
 
-    return nearest ?? { klasse: null, distanceKm: null };
+    if (!nearest) return { klasse: "55-60", distanceKm: null };
+    if (nearest.distanceKm > NOISE_RADIUS_KM) {
+        return { klasse: "55-60", distanceKm: nearest.distanceKm };
+    }
+
+    return nearest;
 }
 
 async function buildWeatherSelectionForPoint(lat, lon) {

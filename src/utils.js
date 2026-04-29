@@ -8,8 +8,13 @@ const HUMIDITY_TOLERANCE_PERCENT = 35;
 const WIND_TARGET_MAX_KMH = 30;
 const WIND_TOLERANCE_KMH = 30;
 const RAIN_WORST_MM = 20;
-const NOISE_GOOD_DB = 55;
-const NOISE_WORST_DB = 80;
+const NOISE_BUCKETS = [
+	{ min: 55, max: 60, score: 10 },
+	{ min: 60, max: 65, score: 7.5 },
+	{ min: 65, max: 70, score: 5 },
+	{ min: 70, max: 75, score: 2.5 },
+	{ min: 75, max: Infinity, score: 0.1 }
+];
 
 export function buildSpotScores(noiseInfo, weatherCombined, cityTemperatureStats) {
 	const temperature = scoreTemperature(weatherCombined?.temperature, cityTemperatureStats);
@@ -39,7 +44,9 @@ export function buildSpotScores(noiseInfo, weatherCombined, cityTemperatureStats
 function scoreNoise(klasseLabel) {
 	const noiseDb = parseNoiseDbEstimate(klasseLabel);
 	if (!Number.isFinite(noiseDb)) return null;
-	return scoreLowerIsBetter(noiseDb, NOISE_GOOD_DB, NOISE_WORST_DB);
+
+	const bucket = NOISE_BUCKETS.find((range) => noiseDb >= range.min && noiseDb < range.max);
+	return bucket ? bucket.score : null;
 }
 
 function scoreTemperature(temperature, cityTemperatureStats) {
