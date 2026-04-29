@@ -24,3 +24,11 @@
 
 ---
 If you have any issues, make sure you have Node.js installed and your API key is correct.
+
+## Data sources
+
+- Netatmo public weather stations (requires API key in `src/api-key.js`)
+- Open-Meteo city averages
+- Hamburg road traffic noise data
+- Sensor.Community air quality (PM2.5/PM10)
+- OpenStreetMap

@@ -4,12 +4,14 @@ import { TEMP_OPTIMAL_C } from "./utils.js";
 const WEATHER_BASE_URL = "https://api.netatmo.com/api/getpublicdata";
 const OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v1/forecast";
 const NOISE_BASE_URL = "https://api.hamburg.de/datasets/v1/strassenverkehr";
+const SENSOR_COMMUNITY_BASE_URL = "https://data.sensor.community/airrohr/v1/filter/box=";
 const ADDRESS_SEARCH_URL = "https://api.hamburg.de/addr_search";
 const NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse";
 
 const LDEN_COLLECTION = "strassenverkehr_tag_abend_nacht_2022";
 const NETATMO_NEAREST_COUNT = 3;
 const NETATMO_RADIUS_KM = 1;
+const SENSOR_COMMUNITY_RADIUS_KM = 2;
 const NOISE_RADIUS_KM = 1;
 const NOISE_PAGE_LIMIT = 1000;
 const NOISE_MAX_PAGE_COUNT = 25;
@@ -80,16 +82,18 @@ export async function fetchWeatherStationsWithinRadius(lat, lon, radiusKm = NETA
 }
 
 export async function fetchPointSelectionData(lat, lon, hamburgBounds) {
-    const [noiseInfo, weatherSelection, cityTemperatureStats] = await Promise.all([
+    const [noiseInfo, weatherSelection, cityTemperatureStats, airQualityInfo] = await Promise.all([
         fetchNoiseInfoForPoint(lat, lon, hamburgBounds),
         buildWeatherSelectionForPoint(lat, lon),
-        fetchAverageCityTemperature(hamburgBounds).catch(() => null)
+        fetchAverageCityTemperature(hamburgBounds).catch(() => null),
+        fetchAirQualityForPoint(lat, lon).catch(() => null)
     ]);
 
     return {
         noiseInfo,
         weatherSelection,
-        cityTemperatureStats
+        cityTemperatureStats,
+        airQualityInfo
     };
 }
 
@@ -327,6 +331,47 @@ async function fetchAverageCityTemperature(hamburgBounds) {
     };
 }
 
+async function fetchAirQualityForPoint(lat, lon) {
+    const bbox = getBoundingBoxForRadius(lat, lon, SENSOR_COMMUNITY_RADIUS_KM);
+    const boxParam = `${bbox.latNe},${bbox.lonSw},${bbox.latSw},${bbox.lonNe}`;
+    const response = await fetch(`${SENSOR_COMMUNITY_BASE_URL}${boxParam}`);
+
+    if (!response.ok) {
+        throw new Error(`Could not load Sensor.Community data (HTTP ${response.status}).`);
+    }
+
+    const data = await response.json();
+    const rawEntries = Array.isArray(data) ? data : [];
+    const readings = rawEntries
+        .map((entry) => extractSensorCommunityReading(entry))
+        .filter(Boolean)
+        .map((reading) => ({
+            ...reading,
+            distanceKm: haversineDistanceKm(lat, lon, reading.lat, reading.lon)
+        }));
+
+    if (readings.length === 0) {
+        return { pm10: null, pm25: null, usedSensors: 0, nearestDistanceKm: null };
+    }
+
+    const nearbyReadings = readings.filter((reading) => reading.distanceKm <= SENSOR_COMMUNITY_RADIUS_KM);
+    const candidates = nearbyReadings.length ? nearbyReadings : readings;
+
+    const weightedPm10 = computeWeightedValue(candidates, "pm10");
+    const weightedPm25 = computeWeightedValue(candidates, "pm25");
+    const nearestDistanceKm = candidates.reduce(
+        (min, reading) => Math.min(min, reading.distanceKm),
+        Infinity
+    );
+
+    return {
+        pm10: weightedPm10,
+        pm25: weightedPm25,
+        usedSensors: candidates.length,
+        nearestDistanceKm: Number.isFinite(nearestDistanceKm) ? nearestDistanceKm : null
+    };
+}
+
 function getHamburgTemperatureSamplePoints(hamburgBounds) {
     const [southWest, northEast] = hamburgBounds;
     const latMin = southWest[0];
@@ -393,6 +438,24 @@ function computeWeightedMetric(stations, metricName) {
         if (!Number.isFinite(value)) return;
 
         const distance = Math.max(station.distanceKm, DISTANCE_WEIGHT_MIN_KM);
+        const weight = 1 / distance;
+        weightedSum += value * weight;
+        totalWeight += weight;
+    });
+
+    if (totalWeight === 0) return null;
+    return weightedSum / totalWeight;
+}
+
+function computeWeightedValue(entries, metricName) {
+    let weightedSum = 0;
+    let totalWeight = 0;
+
+    entries.forEach((entry) => {
+        const value = entry?.[metricName];
+        if (!Number.isFinite(value)) return;
+
+        const distance = Math.max(entry.distanceKm, DISTANCE_WEIGHT_MIN_KM);
         const weight = 1 / distance;
         weightedSum += value * weight;
         totalWeight += weight;
@@ -474,6 +537,36 @@ function extractStationWeather(measures) {
         rain24h,
         windStrength,
         timestamp
+    };
+}
+
+function extractSensorCommunityReading(entry) {
+    const location = entry?.location ?? {};
+    const lat = Number(location?.latitude);
+    const lon = Number(location?.longitude);
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+
+    const values = Array.isArray(entry?.sensordatavalues) ? entry.sensordatavalues : [];
+    let pm10;
+    let pm25;
+
+    values.forEach((value) => {
+        const type = value?.value_type;
+        const numericValue = Number(value?.value);
+        if (!Number.isFinite(numericValue)) return;
+        if (type === "P1") pm10 = numericValue;
+        if (type === "P2") pm25 = numericValue;
+    });
+
+    if (!Number.isFinite(pm10) && !Number.isFinite(pm25)) return null;
+
+    return {
+        lat,
+        lon,
+        pm10: Number.isFinite(pm10) ? pm10 : null,
+        pm25: Number.isFinite(pm25) ? pm25 : null,
+        timestamp: entry?.timestamp ?? null
     };
 }
 

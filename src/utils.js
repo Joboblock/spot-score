@@ -8,6 +8,20 @@ const HUMIDITY_TOLERANCE_PERCENT = 35;
 const WIND_TARGET_MAX_KMH = 30;
 const WIND_TOLERANCE_KMH = 30;
 const RAIN_WORST_MM = 20;
+const AIR_QUALITY_PM25_BUCKETS = [
+	{ max: 10, score: 10 },
+	{ max: 25, score: 7.5 },
+	{ max: 50, score: 5 },
+	{ max: 75, score: 2.5 },
+	{ max: Infinity, score: 0.1 }
+];
+const AIR_QUALITY_PM10_BUCKETS = [
+	{ max: 20, score: 10 },
+	{ max: 40, score: 7.5 },
+	{ max: 60, score: 5 },
+	{ max: 80, score: 2.5 },
+	{ max: Infinity, score: 0.1 }
+];
 const NOISE_BUCKETS = [
 	{ min: 55, max: 60, score: 10 },
 	{ min: 60, max: 65, score: 7.5 },
@@ -16,12 +30,13 @@ const NOISE_BUCKETS = [
 	{ min: 75, max: Infinity, score: 0.1 }
 ];
 
-export function buildSpotScores(noiseInfo, weatherCombined, cityTemperatureStats) {
+export function buildSpotScores(noiseInfo, weatherCombined, cityTemperatureStats, airQualityInfo) {
 	const temperature = scoreTemperature(weatherCombined?.temperature, cityTemperatureStats);
 	const humidity = scoreHumidity(weatherCombined?.humidity);
 
 	const scores = {
 		noise: scoreNoise(noiseInfo?.klasse),
+		airQuality: scoreAirQuality(airQualityInfo?.pm25, airQualityInfo?.pm10),
 		temperature,
 		humidity,
 		wind: scoreWind(weatherCombined?.windStrength, weatherCombined?.temperature),
@@ -107,6 +122,31 @@ function scoreWind(windStrength, temperature) {
 function scoreRain(rain24h) {
 	if (!Number.isFinite(rain24h)) return null;
 	return scoreLowerIsBetter(rain24h, 0, RAIN_WORST_MM);
+}
+
+function scoreAirQuality(pm25, pm10) {
+	const hasPm25 = Number.isFinite(pm25);
+	const hasPm10 = Number.isFinite(pm10);
+
+	if (hasPm25 && hasPm10) {
+		const s25 = scoreAirQualityWithBuckets(pm25, AIR_QUALITY_PM25_BUCKETS);
+		const s10 = scoreAirQualityWithBuckets(pm10, AIR_QUALITY_PM10_BUCKETS);
+		if (Number.isFinite(s25) && Number.isFinite(s10)) {
+			return Math.min(s25, s10);
+		}
+		return Number.isFinite(s25) ? s25 : Number.isFinite(s10) ? s10 : null;
+	}
+
+	if (hasPm25) return scoreAirQualityWithBuckets(pm25, AIR_QUALITY_PM25_BUCKETS);
+	if (hasPm10) return scoreAirQualityWithBuckets(pm10, AIR_QUALITY_PM10_BUCKETS);
+
+	return null;
+}
+
+function scoreAirQualityWithBuckets(value, buckets) {
+	if (!Number.isFinite(value)) return null;
+	const bucket = buckets.find((range) => value <= range.max);
+	return bucket ? bucket.score : SCORE_MIN;
 }
 
 function getTargetWindForTemperature(temperature) {

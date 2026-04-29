@@ -261,11 +261,11 @@ async function handlePointSelection(lat, lon, options = {}) {
     showLoadingOutput("Loading noise and nearest weather data for selected marker...");
 
     try {
-        const { noiseInfo, weatherSelection, cityTemperatureStats } =
+        const { noiseInfo, weatherSelection, cityTemperatureStats, airQualityInfo } =
             await fetchPointSelectionData(lat, lon, HAMBURG_BOUNDS);
 
         renderUsedStationsOnMap(weatherSelection?.usedStations ?? []);
-        renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatureStats);
+        renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatureStats, airQualityInfo);
     } catch (error) {
         clearUsedStationsLayer();
         renderQueryError(error instanceof Error ? error.message : "Failed to load marker data.");
@@ -394,7 +394,7 @@ function renderUsedStationsOnMap(usedStations) {
     usedStationsLayer = L.featureGroup(stationMarkers).addTo(map);
 }
 
-function renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatureStats) {
+function renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatureStats, airQualityInfo) {
     const output = document.getElementById("output");
     if (!output) return;
 
@@ -405,7 +405,8 @@ function renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatu
     const totalStationsUsed = weatherSelection?.totalStationsUsed ?? 0;
     const metricStationCounts = weatherSelection?.metricStationCounts ?? {};
     const combined = weatherSelection?.combined ?? {};
-    const spotScores = buildSpotScores(noiseInfo, combined, cityTemperatureStats);
+    const airQuality = airQualityInfo ?? {};
+    const spotScores = buildSpotScores(noiseInfo, combined, cityTemperatureStats, airQuality);
     const generalScoreText = formatScore(spotScores.general);
 
     const stationRows = usedStations.length
@@ -453,6 +454,8 @@ function renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatu
             </li>
         `;
 
+    const spotName = queryMarker?.getPopup()?.getContent()?.match(/<strong>(.*?)<\/strong>/)?.[1] ?? "Selected spot";
+
     output.innerHTML = `
         <div class="result-stack">
             <section class="result-card result-card--hero">
@@ -460,18 +463,8 @@ function renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatu
                     <span class="pill">Selected spot</span>
                     <span class="pill pill--accent">Hamburg scoring</span>
                 </div>
-                <h3>Marker Data</h3>
+                <h3>${spotName}</h3>
                 <p class="coordinates">${lat.toFixed(5)}, ${lon.toFixed(5)}</p>
-                <div class="quick-stats">
-                    <div class="quick-stat">
-                        <span>Noise class</span>
-                        <strong>${noiseClass}</strong>
-                    </div>
-                    <div class="quick-stat">
-                        <span>Distance to matched feature</span>
-                        <strong>${noiseDistanceText}</strong>
-                    </div>
-                </div>
             </section>
 
             <details class="accordion">
@@ -509,6 +502,40 @@ function renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatu
                 </div>
             </details>
 
+            <details class="accordion">
+                <summary>
+                    <div class="accordion__copy">
+                        <p class="accordion__eyebrow">Noise</p>
+                        <h4>Traffic noise estimate</h4>
+                    </div>
+                    <span class="accordion__meta">${noiseClass}</span>
+                </summary>
+                <div class="accordion__content">
+                    <ul class="stat-list">
+                        <li><strong>Noise class</strong><span>${noiseClass}</span></li>
+                        <li><strong>Distance to matched feature</strong><span>${noiseDistanceText}</span></li>
+                    </ul>
+                </div>
+            </details>
+
+            <details class="accordion">
+                <summary>
+                    <div class="accordion__copy">
+                        <p class="accordion__eyebrow">Air quality</p>
+                        <h4>Sensor.Community readings</h4>
+                    </div>
+                    <span class="accordion__meta">${formatValue(airQuality.pm25, "µg/m³")}</span>
+                </summary>
+                <div class="accordion__content">
+                    <ul class="stat-list">
+                        <li><strong>PM2.5</strong><span>${formatValue(airQuality.pm25, "µg/m³")}</span></li>
+                        <li><strong>PM10</strong><span>${formatValue(airQuality.pm10, "µg/m³")}</span></li>
+                        <li><strong>Sensors used</strong><span>${airQuality.usedSensors ?? 0}</span></li>
+                        <li><strong>Nearest sensor distance</strong><span>${formatDistance(airQuality.nearestDistanceKm)}</span></li>
+                    </ul>
+                </div>
+            </details>
+
             <details class="accordion" open>
                 <summary>
                     <div class="accordion__copy">
@@ -520,6 +547,7 @@ function renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatu
                 <div class="accordion__content">
                     <ul class="score-list">
                         <li><strong>Noise</strong><span class="score-value">${formatScore(spotScores.noise)}</span></li>
+                        <li><strong>Air quality</strong><span class="score-value">${formatScore(spotScores.airQuality)}</span></li>
                         <li><strong>Temperature</strong><span class="score-value">${formatScore(spotScores.temperature)}</span></li>
                         <li><strong>Humidity</strong><span class="score-value">${formatScore(spotScores.humidity)}</span></li>
                         <li><strong>Wind</strong><span class="score-value">${formatScore(spotScores.wind)}</span></li>
@@ -531,7 +559,7 @@ function renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatu
             <section class="result-card result-card--score">
                 <p class="score-kicker">General spot score</p>
                 <div class="score-display">${generalScoreText}</div>
-                <p class="score-caption">A combined read across noise, temperature, humidity, wind, and rain for the selected point.</p>
+                <p class="score-caption">A combined read across noise, air quality, temperature, humidity, wind, and rain for the selected point.</p>
             </section>
         </div>
     `;
