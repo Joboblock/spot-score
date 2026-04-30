@@ -97,6 +97,10 @@ export async function fetchPointSelectionData(lat, lon, hamburgBounds) {
     };
 }
 
+export async function preloadNoiseData(hamburgBounds) {
+    await fetchCachedHamburgNoise(hamburgBounds);
+}
+
 export async function fetchAddressSuggestions(query, options = {}) {
     const { limit = 5, signal } = options;
     const response = await fetch(ADDRESS_SEARCH_URL, {

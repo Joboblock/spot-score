@@ -2,7 +2,8 @@ import { buildSpotScores, TEMP_OPTIMAL_C } from "./utils.js";
 import {
     fetchAddressLabelForCoordinates,
     fetchAddressSuggestions,
-    fetchPointSelectionData
+    fetchPointSelectionData,
+    preloadNoiseData
 } from "./data-api.js";
 
 const DEFAULT_CENTER = [53.5511, 9.9937];
@@ -26,6 +27,7 @@ document.addEventListener("DOMContentLoaded", () => {
     hideOutput();
 
     setupAddressSearch();
+    preloadNoiseData(HAMBURG_BOUNDS).catch(() => null);
 
     initMap();
 });
