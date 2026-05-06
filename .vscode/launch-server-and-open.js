@@ -6,7 +6,14 @@ const PORT = 8800;
 
 // Simple static file server
 const server = http.createServer((req, res) => {
-    let filePath = path.join(process.cwd(), "src", req.url === "/" ? "index.html" : req.url);
+    const normalizedUrl = req.url === "/" ? "/index.html" : req.url;
+    let filePath;
+
+    if (normalizedUrl.startsWith("/gml/")) {
+        filePath = path.join(process.cwd(), "Area 1 neu", normalizedUrl.replace("/gml/", ""));
+    } else {
+        filePath = path.join(process.cwd(), "src", normalizedUrl);
+    }
 
     const ext = path.extname(filePath);
     let contentType = "text/html";
@@ -14,6 +21,7 @@ const server = http.createServer((req, res) => {
     if (ext === ".js") contentType = "text/javascript";
     if (ext === ".css") contentType = "text/css";
     if (ext === ".json") contentType = "application/json";
+    if (ext === ".gml" || ext === ".xml") contentType = "application/xml";
 
     fs.readFile(filePath, (err, content) => {
         if (err) {

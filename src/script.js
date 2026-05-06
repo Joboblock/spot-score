@@ -1,4 +1,5 @@
 import { buildSpotScores, TEMP_OPTIMAL_C } from "./utils.js";
+import { initGmlFootprintsLayer } from "./gml-layer.js";
 import {
     fetchAddressLabelForCoordinates,
     fetchAddressSuggestions,
@@ -49,11 +50,14 @@ function initMap() {
         attribution: ""
     }).addTo(map);
 
+    initGmlFootprintsLayer(map);
+
     map.on("click", (event) => {
         const { lat, lng } = event.latlng;
         handlePointSelection(lat, lng);
     });
 }
+
 
 function setupAddressSearch() {
     const input = document.getElementById("addressSearchInput");
