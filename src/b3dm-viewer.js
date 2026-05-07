@@ -129,16 +129,42 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
 
                 const buffer = await response.arrayBuffer();
                 const header = parseB3dmHeader(buffer);
+                const gltf = extractGltfFromB3dm(buffer);
+                const validation = gltf ? validateGltfPayload(gltf) : null;
+                const rayCheck = gltf
+                    ? rayIntersectsGltf(gltf, {
+                          origin: [0, 0, 1000],
+                          direction: [0, 0, -1]
+                      })
+                    : null;
 
                 if (debug) {
                     console.info("[b3dm] Loaded tile", {
                         tile,
                         sizeBytes: buffer.byteLength,
-                        header
+                        header,
+                        gltf: gltf
+                            ? {
+                                  jsonByteLength: gltf.jsonByteLength,
+                                  binaryByteLength: gltf.binaryByteLength,
+                                  hasBinaryChunk: Boolean(gltf.binaryChunk),
+                                  parsedJson: Boolean(gltf.json),
+                                  validation
+                              }
+                            : null
                     });
+
+                    if (rayCheck) {
+                        console.info("[b3dm] Ray check", {
+                            tile,
+                            hit: rayCheck.hit,
+                            trianglesTested: rayCheck.trianglesTested,
+                            reason: rayCheck.reason
+                        });
+                    }
                 }
 
-                return { tile, buffer, header };
+                return { tile, buffer, header, gltf, validation, rayCheck };
             } catch (error) {
                 if (debug) {
                     console.warn("[b3dm] Failed to load tile", {
@@ -161,6 +187,344 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
     }
 
     return loaded;
+}
+
+export function extractGltfFromB3dm(buffer) {
+    const header = parseB3dmHeader(buffer);
+    if (!header || header.magic !== "b3dm") {
+        return null;
+    }
+
+    const view = new DataView(buffer);
+    const featureTableJsonByteLength = view.getUint32(12, true);
+    const featureTableBinaryByteLength = view.getUint32(16, true);
+    const batchTableJsonByteLength = view.getUint32(20, true);
+    const batchTableBinaryByteLength = view.getUint32(24, true);
+
+    const gltfStart =
+        28 +
+        featureTableJsonByteLength +
+        featureTableBinaryByteLength +
+        batchTableJsonByteLength +
+        batchTableBinaryByteLength;
+
+    if (gltfStart >= buffer.byteLength) {
+        return null;
+    }
+
+    const gltfBuffer = buffer.slice(gltfStart);
+    const gltfView = new DataView(gltfBuffer);
+    const magic = String.fromCharCode(
+        gltfView.getUint8(0),
+        gltfView.getUint8(1),
+        gltfView.getUint8(2),
+        gltfView.getUint8(3)
+    );
+
+    if (magic !== "glTF") {
+        return null;
+    }
+
+    const version = gltfView.getUint32(4, true);
+    const length = gltfView.getUint32(8, true);
+
+    let offset = 12;
+    let jsonChunk = null;
+    let binaryChunk = null;
+    let jsonByteLength = 0;
+    let binaryByteLength = 0;
+
+    while (offset + 8 <= length) {
+        const chunkLength = gltfView.getUint32(offset, true);
+        const chunkType = gltfView.getUint32(offset + 4, true);
+        const chunkStart = offset + 8;
+        const chunkEnd = chunkStart + chunkLength;
+
+        if (chunkEnd > gltfBuffer.byteLength) {
+            break;
+        }
+
+        if (chunkType === 0x4e4f534a) {
+            jsonChunk = new TextDecoder("utf-8").decode(
+                new Uint8Array(gltfBuffer.slice(chunkStart, chunkEnd))
+            );
+            jsonByteLength = chunkLength;
+        } else if (chunkType === 0x004e4942) {
+            binaryChunk = gltfBuffer.slice(chunkStart, chunkEnd);
+            binaryByteLength = chunkLength;
+        }
+
+        offset = chunkEnd;
+    }
+
+    let json = null;
+    let jsonError = null;
+
+    if (jsonChunk) {
+        try {
+            json = JSON.parse(jsonChunk);
+        } catch (error) {
+            jsonError = error instanceof Error ? error.message : String(error);
+        }
+    }
+
+    return {
+        version,
+        length,
+        jsonChunk,
+        binaryChunk,
+        jsonByteLength,
+        binaryByteLength,
+        json,
+        jsonError
+    };
+}
+
+export function validateGltfPayload(gltf) {
+    const issues = [];
+
+    if (!gltf?.json) {
+        issues.push(gltf?.jsonError ?? "Missing glTF JSON chunk");
+    }
+
+    if (!gltf?.binaryChunk) {
+        issues.push("Missing binary chunk");
+    }
+
+    const json = gltf?.json ?? {};
+
+    if (!Array.isArray(json.buffers) || json.buffers.length === 0) {
+        issues.push("No buffers declared in glTF JSON");
+    }
+
+    if (!Array.isArray(json.bufferViews) || json.bufferViews.length === 0) {
+        issues.push("No bufferViews declared in glTF JSON");
+    }
+
+    if (!Array.isArray(json.accessors) || json.accessors.length === 0) {
+        issues.push("No accessors declared in glTF JSON");
+    }
+
+    if (!Array.isArray(json.meshes) || json.meshes.length === 0) {
+        issues.push("No meshes declared in glTF JSON");
+    }
+
+    return {
+        isValid: issues.length === 0,
+        issues,
+        meshCount: Array.isArray(json.meshes) ? json.meshes.length : 0,
+        accessorCount: Array.isArray(json.accessors) ? json.accessors.length : 0
+    };
+}
+
+export function rayIntersectsGltf(gltf, ray, options = {}) {
+    const validation = validateGltfPayload(gltf);
+    if (!validation.isValid) {
+        return {
+            hit: false,
+            trianglesTested: 0,
+            reason: "Invalid glTF payload"
+        };
+    }
+
+    const maxTriangles = Number.isFinite(options.maxTriangles) ? options.maxTriangles : 20000;
+    const direction = normalizeVec3(ray?.direction);
+    const origin = ray?.origin;
+    if (!origin || !direction) {
+        return {
+            hit: false,
+            trianglesTested: 0,
+            reason: "Invalid ray"
+        };
+    }
+
+    const json = gltf.json;
+    let trianglesTested = 0;
+
+    for (const mesh of json.meshes ?? []) {
+        for (const primitive of mesh.primitives ?? []) {
+            const positionAccessorIndex = primitive.attributes?.POSITION;
+            if (positionAccessorIndex === undefined) continue;
+
+            const positions = getAccessorData(gltf, positionAccessorIndex);
+            if (!positions) continue;
+
+            const indices =
+                primitive.indices !== undefined ? getAccessorData(gltf, primitive.indices) : null;
+
+            const hit = testRayAgainstPrimitive(
+                origin,
+                direction,
+                positions,
+                indices,
+                maxTriangles,
+                trianglesTested
+            );
+
+            trianglesTested = hit.trianglesTested;
+
+            if (hit.hit) {
+                return {
+                    hit: true,
+                    trianglesTested,
+                    reason: "Hit geometry"
+                };
+            }
+
+            if (trianglesTested >= maxTriangles) {
+                return {
+                    hit: false,
+                    trianglesTested,
+                    reason: "Triangle limit reached"
+                };
+            }
+        }
+    }
+
+    return {
+        hit: false,
+        trianglesTested,
+        reason: "No hit"
+    };
+}
+
+function testRayAgainstPrimitive(origin, direction, positions, indices, maxTriangles, startCount) {
+    let trianglesTested = startCount;
+
+    const positionStride = 3;
+    const indexArray = indices ? Array.from(indices) : null;
+
+    const triangleCount = indexArray ? Math.floor(indexArray.length / 3) : positions.length / 9;
+
+    for (let i = 0; i < triangleCount; i += 1) {
+        if (trianglesTested >= maxTriangles) break;
+
+        const indexBase = i * 3;
+        const idx0 = indexArray ? indexArray[indexBase] : indexBase;
+        const idx1 = indexArray ? indexArray[indexBase + 1] : indexBase + 1;
+        const idx2 = indexArray ? indexArray[indexBase + 2] : indexBase + 2;
+
+        const v0 = readVec3(positions, idx0 * positionStride);
+        const v1 = readVec3(positions, idx1 * positionStride);
+        const v2 = readVec3(positions, idx2 * positionStride);
+
+        trianglesTested += 1;
+
+        if (rayIntersectsTriangle(origin, direction, v0, v1, v2)) {
+            return { hit: true, trianglesTested };
+        }
+    }
+
+    return { hit: false, trianglesTested };
+}
+
+function getAccessorData(gltf, accessorIndex) {
+    const accessor = gltf?.json?.accessors?.[accessorIndex];
+    if (!accessor) return null;
+
+    const bufferView = gltf.json.bufferViews?.[accessor.bufferView];
+    if (!bufferView || !gltf.binaryChunk) return null;
+
+    const componentType = accessor.componentType;
+    const componentSize = getComponentSize(componentType);
+    const elementSize = getAccessorTypeSize(accessor.type);
+
+    if (!componentSize || !elementSize) return null;
+
+    const byteOffset = (bufferView.byteOffset ?? 0) + (accessor.byteOffset ?? 0);
+    const byteLength = accessor.count * elementSize * componentSize;
+
+    if (byteOffset + byteLength > gltf.binaryChunk.byteLength) return null;
+
+    const slice = gltf.binaryChunk.slice(byteOffset, byteOffset + byteLength);
+
+    switch (componentType) {
+        case 5126:
+            return new Float32Array(slice);
+        case 5123:
+            return new Uint16Array(slice);
+        case 5125:
+            return new Uint32Array(slice);
+        default:
+            return null;
+    }
+}
+
+function getComponentSize(componentType) {
+    switch (componentType) {
+        case 5126:
+            return 4;
+        case 5123:
+            return 2;
+        case 5125:
+            return 4;
+        default:
+            return null;
+    }
+}
+
+function getAccessorTypeSize(type) {
+    switch (type) {
+        case "SCALAR":
+            return 1;
+        case "VEC2":
+            return 2;
+        case "VEC3":
+            return 3;
+        case "VEC4":
+            return 4;
+        default:
+            return null;
+    }
+}
+
+function rayIntersectsTriangle(origin, direction, v0, v1, v2) {
+    const epsilon = 1e-8;
+    const edge1 = subtractVec3(v1, v0);
+    const edge2 = subtractVec3(v2, v0);
+    const h = crossVec3(direction, edge2);
+    const a = dotVec3(edge1, h);
+
+    if (a > -epsilon && a < epsilon) return false;
+
+    const f = 1 / a;
+    const s = subtractVec3(origin, v0);
+    const u = f * dotVec3(s, h);
+    if (u < 0 || u > 1) return false;
+
+    const q = crossVec3(s, edge1);
+    const v = f * dotVec3(direction, q);
+    if (v < 0 || u + v > 1) return false;
+
+    const t = f * dotVec3(edge2, q);
+    return t > epsilon;
+}
+
+function normalizeVec3(vec) {
+    if (!Array.isArray(vec) || vec.length < 3) return null;
+    const length = Math.sqrt(vec[0] ** 2 + vec[1] ** 2 + vec[2] ** 2);
+    if (length === 0) return null;
+    return [vec[0] / length, vec[1] / length, vec[2] / length];
+}
+
+function subtractVec3(a, b) {
+    return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+}
+
+function crossVec3(a, b) {
+    return [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0]
+    ];
+}
+
+function dotVec3(a, b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+function readVec3(buffer, index) {
+    return [buffer[index], buffer[index + 1], buffer[index + 2]];
 }
 
 function pickNearbyTiles(lat, lon, bounds, neighborRadius, maxTiles) {
