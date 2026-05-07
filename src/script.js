@@ -1,6 +1,6 @@
 import { buildSpotScores, TEMP_OPTIMAL_C } from "./utils.js";
-import { computeSunExposure } from "./sun-exposure.js";
-import { loadNearbyBuildingData } from "./b3dm-viewer.js";
+import { computeSunDirection, computeSunExposure } from "./sun-exposure.js";
+import { loadNearbyBuildingData, rayIntersectsGltf } from "./b3dm-viewer.js";
 import {
     fetchAddressLabelForCoordinates,
     fetchAddressSuggestions,
@@ -24,6 +24,7 @@ let queryMarker;
 let usedStationsLayer;
 let addressSearchAbortController;
 let addressSearchTimeout;
+const ENABLE_SUN_DEBUG = new URLSearchParams(window.location.search).has("sunDebug");
 
 document.addEventListener("DOMContentLoaded", () => {
     hideOutput();
@@ -260,8 +261,20 @@ async function handlePointSelection(lat, lon, options = {}) {
 
     hideAppHeader();
 
-    loadNearbyBuildingData(lat, lon, { debug: true }).catch((error) => {
+    const exposureNow = new Date();
+    const sunDirection = computeSunDirection(lat, lon, exposureNow);
+    const buildingDataPromise = loadNearbyBuildingData(lat, lon, {
+        debug: true,
+        ray: sunDirection
+            ? {
+                  origin: [0, 0, 0],
+                  direction: sunDirection
+              }
+            : null,
+        rayOptions: { maxTriangles: 8000 }
+    }).catch((error) => {
         console.warn("[b3dm] Unexpected error while loading building data", error);
+        return [];
     });
 
     clearUsedStationsLayer();
@@ -269,11 +282,23 @@ async function handlePointSelection(lat, lon, options = {}) {
     showLoadingOutput("Loading noise and nearest weather data for selected marker...");
 
     try {
-        const { noiseInfo, weatherSelection, cityTemperatureStats, airQualityInfo } =
-            await fetchPointSelectionData(lat, lon, HAMBURG_BOUNDS);
+        const [pointSelection, buildingData] = await Promise.all([
+            fetchPointSelectionData(lat, lon, HAMBURG_BOUNDS),
+            buildingDataPromise
+        ]);
+
+        const { noiseInfo, weatherSelection, cityTemperatureStats, airQualityInfo } = pointSelection;
 
         renderUsedStationsOnMap(weatherSelection?.usedStations ?? []);
-        renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatureStats, airQualityInfo);
+        renderPointResults(
+            lat,
+            lon,
+            noiseInfo,
+            weatherSelection,
+            cityTemperatureStats,
+            airQualityInfo,
+            buildingData
+        );
     } catch (error) {
         clearUsedStationsLayer();
         renderQueryError(error instanceof Error ? error.message : "Failed to load marker data.");
@@ -402,7 +427,15 @@ function renderUsedStationsOnMap(usedStations) {
     usedStationsLayer = L.featureGroup(stationMarkers).addTo(map);
 }
 
-function renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatureStats, airQualityInfo) {
+function renderPointResults(
+    lat,
+    lon,
+    noiseInfo,
+    weatherSelection,
+    cityTemperatureStats,
+    airQualityInfo,
+    buildingData = []
+) {
     const output = document.getElementById("output");
     if (!output) return;
 
@@ -418,7 +451,12 @@ function renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatu
     const generalScoreText = formatScore(spotScores.general);
     const exposureNow = new Date();
     const sunExposure = computeSunExposure(lat, lon, exposureNow, { lookAheadHours: 12, stepMinutes: 5 });
-    const exposureStatus = sunExposure.isSunUp === null ? "n/a" : sunExposure.isSunUp ? "In sun" : "In shade";
+    const sunlitStatus = evaluateSunlitStatus(lat, lon, exposureNow, buildingData, ENABLE_SUN_DEBUG);
+    const exposureStatus = sunlitStatus.isSunlit === null
+        ? "n/a"
+        : sunlitStatus.isSunlit
+            ? "In sun"
+            : "In shade";
     const exposureAltitudeText = formatValue(sunExposure.altitudeDeg, "°");
     const exposureDurationText = sunExposure.minutesUntilChange === null
         ? "n/a"
@@ -428,6 +466,22 @@ function renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatu
     const exposureChangeLabel = sunExposure.nextChangeTime
         ? `${sunExposure.changeType === "sunrise" ? "Sunrise" : "Sunset"} at ${formatLocalTime(sunExposure.nextChangeTime, exposureNow)}`
         : `No change expected in next ${sunExposure.lookAheadHours}h`;
+    const sunStartForecast = findNextSunlitTime(
+        lat,
+        lon,
+        exposureNow,
+        buildingData,
+        sunlitStatus,
+        { lookAheadHours: 12, stepMinutes: 10 }
+    );
+    const sunStartText = sunStartForecast.minutesUntilStart === null
+        ? "n/a"
+        : sunStartForecast.minutesUntilStart === 0
+            ? "Now"
+            : formatDurationMinutes(sunStartForecast.minutesUntilStart);
+    const sunStartLabel = sunStartForecast.nextTime
+        ? `Sun exposure starts at ${formatLocalTime(sunStartForecast.nextTime, exposureNow)}`
+        : sunStartForecast.reason;
 
     const stationRows = usedStations.length
         ? usedStations
@@ -568,10 +622,12 @@ function renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatu
                     <ul class="stat-list">
                         <li><strong>Current status</strong><span>${exposureStatus}</span></li>
                         <li><strong>Sun altitude</strong><span>${exposureAltitudeText}</span></li>
+                        <li><strong>Time until sun exposure starts</strong><span>${sunStartText}</span></li>
+                        <li><strong>Exposure start</strong><span>${sunStartLabel}</span></li>
                         <li><strong>Time until change</strong><span>${exposureDurationText}</span></li>
                         <li><strong>Next change</strong><span>${exposureChangeLabel}</span></li>
                     </ul>
-                    <p class="section-note">Based on solar position only (no building shadow model). Forecast limited to 12 hours.</p>
+                    <p class="section-note">Sun exposure uses basic ray checks against nearby building tiles. Forecast limited to 12 hours.</p>
                 </div>
             </details>
 
@@ -699,4 +755,149 @@ function formatLocalTime(date, referenceDate) {
         minute: "2-digit",
         weekday: sameDay ? undefined : "short"
     });
+}
+
+function evaluateSunlitStatus(lat, lon, date, buildingData, debug = false) {
+    const sunDirection = computeSunDirection(lat, lon, date);
+    const sunExposure = computeSunExposure(lat, lon, date, { lookAheadHours: 12, stepMinutes: 10 });
+
+    if (!sunDirection || sunExposure.isSunUp === null) {
+        if (debug) {
+            console.info("[sun-ray] Missing sun direction", {
+                lat,
+                lon,
+                date,
+                sunDirection,
+                isSunUp: sunExposure.isSunUp
+            });
+        }
+        return { isSunlit: null, isSunUp: sunExposure.isSunUp, reason: "No sun position" };
+    }
+
+    if (!sunExposure.isSunUp) {
+        if (debug) {
+            console.info("[sun-ray] Sun below horizon", {
+                lat,
+                lon,
+                date,
+                altitudeDeg: sunExposure.altitudeDeg,
+                azimuthDeg: sunExposure.azimuthDeg
+            });
+        }
+        return { isSunlit: false, isSunUp: false, reason: "Sun below horizon" };
+    }
+
+    if (!Array.isArray(buildingData) || buildingData.length === 0) {
+        if (debug) {
+            console.info("[sun-ray] No building data", {
+                lat,
+                lon,
+                date,
+                direction: sunDirection
+            });
+        }
+        return { isSunlit: true, isSunUp: true, reason: "No building data" };
+    }
+
+    if (debug) {
+        console.info("[sun-ray] Raycast start", {
+            lat,
+            lon,
+            date,
+            direction: sunDirection,
+            tilesLoaded: buildingData.length,
+            altitudeDeg: sunExposure.altitudeDeg,
+            azimuthDeg: sunExposure.azimuthDeg
+        });
+    }
+
+    for (const tile of buildingData) {
+        if (!tile?.gltf || tile?.validation?.isValid === false) {
+            if (debug) {
+                console.info("[sun-ray] Skipping tile", {
+                    tile: tile?.tile,
+                    hasGltf: Boolean(tile?.gltf),
+                    validation: tile?.validation
+                });
+            }
+            continue;
+        }
+
+        const rayCheck = rayIntersectsGltf(
+            tile.gltf,
+            {
+                origin: [0, 0, 0],
+                direction: sunDirection
+            },
+            { maxTriangles: 8000 }
+        );
+
+        if (debug) {
+            console.info("[sun-ray] Tile result", {
+                tile: tile.tile,
+                hit: rayCheck?.hit,
+                trianglesTested: rayCheck?.trianglesTested,
+                reason: rayCheck?.reason
+            });
+        }
+
+        if (rayCheck?.hit) {
+            if (debug) {
+                console.info("[sun-ray] Blocking tile", {
+                    tile: tile.tile,
+                    lat,
+                    lon,
+                    date
+                });
+            }
+            return { isSunlit: false, isSunUp: true, reason: "Blocked by geometry" };
+        }
+    }
+
+    if (debug) {
+        console.info("[sun-ray] No hits", {
+            lat,
+            lon,
+            date
+        });
+    }
+
+    return { isSunlit: true, isSunUp: true, reason: "Clear" };
+}
+
+function findNextSunlitTime(lat, lon, now, buildingData, currentStatus, options = {}) {
+    const lookAheadHours = Number.isFinite(options.lookAheadHours) ? options.lookAheadHours : 12;
+    const stepMinutes = Number.isFinite(options.stepMinutes) ? options.stepMinutes : 10;
+    const maxMinutes = Math.max(0, lookAheadHours * 60);
+
+    if (currentStatus?.isSunlit === true) {
+        return { minutesUntilStart: 0, nextTime: now, reason: "Already sunlit" };
+    }
+
+    if (currentStatus?.isSunlit === null) {
+        return { minutesUntilStart: null, nextTime: null, reason: "Sun position unavailable" };
+    }
+
+    let previousSunlit = currentStatus.isSunlit;
+
+    for (let elapsed = stepMinutes; elapsed <= maxMinutes; elapsed += stepMinutes) {
+        const candidate = new Date(now.getTime() + elapsed * 60000);
+    const status = evaluateSunlitStatus(lat, lon, candidate, buildingData);
+
+        if (status.isSunlit && !previousSunlit) {
+            return {
+                minutesUntilStart: elapsed,
+                nextTime: candidate,
+                reason: "Sun exposure expected"
+            };
+        }
+
+        previousSunlit = status.isSunlit;
+    }
+
+    return {
+        minutesUntilStart: null,
+        nextTime: null,
+        reason: `No sun exposure change in next ${lookAheadHours}h`
+    };
 }

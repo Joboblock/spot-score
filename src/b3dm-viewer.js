@@ -97,7 +97,9 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
         path = DEFAULT_B3DM_PATH,
         bounds = DEFAULT_BOUNDS,
         neighborRadius = 1,
-        maxTiles = 9
+        maxTiles = 9,
+        ray = null,
+        rayOptions = {}
     } = options;
 
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
@@ -131,12 +133,7 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
                 const header = parseB3dmHeader(buffer);
                 const gltf = extractGltfFromB3dm(buffer);
                 const validation = gltf ? validateGltfPayload(gltf) : null;
-                const rayCheck = gltf
-                    ? rayIntersectsGltf(gltf, {
-                          origin: [0, 0, 1000],
-                          direction: [0, 0, -1]
-                      })
-                    : null;
+                                const rayCheck = gltf && ray ? rayIntersectsGltf(gltf, ray, rayOptions) : null;
 
                 if (debug) {
                     console.info("[b3dm] Loaded tile", {

@@ -5,6 +5,7 @@ export function computeSunExposure(lat, lon, now = new Date(), options = {}) {
         return {
             isSunUp: null,
             altitudeDeg: null,
+            azimuthDeg: null,
             minutesUntilChange: null,
             nextChangeTime: null,
             changeType: null,
@@ -16,7 +17,9 @@ export function computeSunExposure(lat, lon, now = new Date(), options = {}) {
     const stepMinutes = Number.isFinite(options.stepMinutes) ? options.stepMinutes : 5;
     const maxMinutes = Math.max(0, lookAheadHours * 60);
 
-    const altitudeDeg = getSolarAltitudeDeg(lat, lon, now);
+    const position = getSolarPosition(lat, lon, now);
+    const altitudeDeg = position.altitudeDeg;
+    const azimuthDeg = position.azimuthDeg;
     const isSunUp = Number.isFinite(altitudeDeg) ? altitudeDeg > 0 : null;
 
     let nextChangeTime = null;
@@ -29,7 +32,7 @@ export function computeSunExposure(lat, lon, now = new Date(), options = {}) {
 
         for (let elapsed = stepMinutes; elapsed <= maxMinutes; elapsed += stepMinutes) {
             const candidateTime = new Date(now.getTime() + elapsed * 60 * 1000);
-            const candidateUp = getSolarAltitudeDeg(lat, lon, candidateTime) > 0;
+            const candidateUp = getSolarPosition(lat, lon, candidateTime).altitudeDeg > 0;
 
             if (candidateUp !== previousSunUp) {
                 nextChangeTime = refineTransitionTime(lat, lon, previousTime, candidateTime, previousSunUp);
@@ -50,11 +53,29 @@ export function computeSunExposure(lat, lon, now = new Date(), options = {}) {
     return {
         isSunUp,
         altitudeDeg,
+        azimuthDeg,
         minutesUntilChange,
         nextChangeTime,
         changeType,
         lookAheadHours
     };
+}
+
+export function computeSunDirection(lat, lon, date = new Date()) {
+    const position = getSolarPosition(lat, lon, date);
+    if (!Number.isFinite(position.altitudeDeg) || !Number.isFinite(position.azimuthDeg)) {
+        return null;
+    }
+
+    const altitudeRad = position.altitudeDeg * RAD;
+    const azimuthRad = position.azimuthDeg * RAD;
+
+    const cosAltitude = Math.cos(altitudeRad);
+    const east = Math.sin(azimuthRad) * cosAltitude;
+    const north = Math.cos(azimuthRad) * cosAltitude;
+    const up = Math.sin(altitudeRad);
+
+    return normalizeVec3([east, north, up]);
 }
 
 function refineTransitionTime(lat, lon, startTime, endTime, startSunUp) {
@@ -63,7 +84,7 @@ function refineTransitionTime(lat, lon, startTime, endTime, startSunUp) {
 
     for (let i = 0; i < 10; i += 1) {
         const midTime = new Date((start.getTime() + end.getTime()) / 2);
-        const midSunUp = getSolarAltitudeDeg(lat, lon, midTime) > 0;
+    const midSunUp = getSolarPosition(lat, lon, midTime).altitudeDeg > 0;
 
         if (midSunUp === startSunUp) {
             start = midTime;
@@ -75,9 +96,9 @@ function refineTransitionTime(lat, lon, startTime, endTime, startSunUp) {
     return end;
 }
 
-function getSolarAltitudeDeg(lat, lon, date) {
+function getSolarPosition(lat, lon, date) {
     if (!Number.isFinite(lat) || !Number.isFinite(lon) || !(date instanceof Date)) {
-        return NaN;
+        return { altitudeDeg: NaN, azimuthDeg: NaN };
     }
 
     const utc = new Date(date.getTime());
@@ -120,11 +141,24 @@ function getSolarAltitudeDeg(lat, lon, date) {
     const zenith = Math.acos(Math.min(Math.max(cosZenith, -1), 1));
     const altitude = 90 - (zenith / RAD);
 
-    return altitude;
+    const azimuth = Math.atan2(
+        Math.sin(hourAngleRad),
+        Math.cos(hourAngleRad) * Math.sin(latRad) - Math.tan(decl) * Math.cos(latRad)
+    );
+    const azimuthDeg = (azimuth / RAD + 180) % 360;
+
+    return { altitudeDeg: altitude, azimuthDeg };
 }
 
 function getDayOfYearUTC(date) {
     const yearStart = Date.UTC(date.getUTCFullYear(), 0, 0);
     const diff = date.getTime() - yearStart;
     return Math.floor(diff / 86400000);
+}
+
+function normalizeVec3(vec) {
+    if (!Array.isArray(vec) || vec.length < 3) return null;
+    const length = Math.sqrt(vec[0] ** 2 + vec[1] ** 2 + vec[2] ** 2);
+    if (!Number.isFinite(length) || length === 0) return null;
+    return [vec[0] / length, vec[1] / length, vec[2] / length];
 }
