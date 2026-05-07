@@ -1,4 +1,5 @@
 import { buildSpotScores, TEMP_OPTIMAL_C } from "./utils.js";
+import { computeSunExposure } from "./sun-exposure.js";
 import {
     fetchAddressLabelForCoordinates,
     fetchAddressSuggestions,
@@ -410,6 +411,18 @@ function renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatu
     const airQuality = airQualityInfo ?? {};
     const spotScores = buildSpotScores(noiseInfo, combined, cityTemperatureStats, airQuality);
     const generalScoreText = formatScore(spotScores.general);
+    const exposureNow = new Date();
+    const sunExposure = computeSunExposure(lat, lon, exposureNow, { lookAheadHours: 12, stepMinutes: 5 });
+    const exposureStatus = sunExposure.isSunUp === null ? "n/a" : sunExposure.isSunUp ? "In sun" : "In shade";
+    const exposureAltitudeText = formatValue(sunExposure.altitudeDeg, "°");
+    const exposureDurationText = sunExposure.minutesUntilChange === null
+        ? "n/a"
+        : sunExposure.nextChangeTime
+            ? formatDurationMinutes(sunExposure.minutesUntilChange)
+            : `${formatDurationMinutes(sunExposure.minutesUntilChange)}+`;
+    const exposureChangeLabel = sunExposure.nextChangeTime
+        ? `${sunExposure.changeType === "sunrise" ? "Sunrise" : "Sunset"} at ${formatLocalTime(sunExposure.nextChangeTime, exposureNow)}`
+        : `No change expected in next ${sunExposure.lookAheadHours}h`;
 
     const stationRows = usedStations.length
         ? usedStations
@@ -538,6 +551,25 @@ function renderPointResults(lat, lon, noiseInfo, weatherSelection, cityTemperatu
                 </div>
             </details>
 
+            <details class="accordion">
+                <summary>
+                    <div class="accordion__copy">
+                        <p class="accordion__eyebrow">Sun exposure</p>
+                        <h4>Sun & shade outlook</h4>
+                    </div>
+                    <span class="accordion__meta">${exposureStatus}</span>
+                </summary>
+                <div class="accordion__content">
+                    <ul class="stat-list">
+                        <li><strong>Current status</strong><span>${exposureStatus}</span></li>
+                        <li><strong>Sun altitude</strong><span>${exposureAltitudeText}</span></li>
+                        <li><strong>Time until change</strong><span>${exposureDurationText}</span></li>
+                        <li><strong>Next change</strong><span>${exposureChangeLabel}</span></li>
+                    </ul>
+                    <p class="section-note">Based on solar position only (no building shadow model). Forecast limited to 12 hours.</p>
+                </div>
+            </details>
+
             <details class="accordion" open>
                 <summary>
                     <div class="accordion__copy">
@@ -630,4 +662,36 @@ function formatDistance(value) {
 function formatScore(value) {
     if (!Number.isFinite(value)) return "n/a";
     return value.toFixed(1);
+}
+
+function formatDurationMinutes(minutes) {
+    if (!Number.isFinite(minutes)) return "n/a";
+    const rounded = Math.max(0, Math.round(minutes));
+    const hours = Math.floor(rounded / 60);
+    const mins = rounded % 60;
+
+    if (hours > 0 && mins > 0) {
+        return `${hours}h ${mins}m`;
+    }
+
+    if (hours > 0) {
+        return `${hours}h`;
+    }
+
+    return `${mins}m`;
+}
+
+function formatLocalTime(date, referenceDate) {
+    if (!(date instanceof Date)) return "n/a";
+    const sameDay =
+        referenceDate instanceof Date &&
+        date.getFullYear() === referenceDate.getFullYear() &&
+        date.getMonth() === referenceDate.getMonth() &&
+        date.getDate() === referenceDate.getDate();
+
+    return date.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        weekday: sameDay ? undefined : "short"
+    });
 }
