@@ -6,7 +6,15 @@ const PORT = 8800;
 
 // Simple static file server
 const server = http.createServer((req, res) => {
-    let filePath = path.join(process.cwd(), "src", req.url === "/" ? "index.html" : req.url);
+    const sanitizedPath = decodeURIComponent(req.url === "/" ? "/index.html" : req.url);
+    const requestedPath = sanitizedPath.replace(/^[\/]+/, "");
+    const srcRoot = path.join(process.cwd(), "src");
+    const repoRoot = process.cwd();
+
+    let filePath = path.join(srcRoot, requestedPath || "index.html");
+    if (!fs.existsSync(filePath)) {
+        filePath = path.join(repoRoot, requestedPath);
+    }
 
     const ext = path.extname(filePath);
     let contentType = "text/html";
@@ -14,6 +22,7 @@ const server = http.createServer((req, res) => {
     if (ext === ".js") contentType = "text/javascript";
     if (ext === ".css") contentType = "text/css";
     if (ext === ".json") contentType = "application/json";
+    if (ext === ".b3dm") contentType = "application/octet-stream";
 
     fs.readFile(filePath, (err, content) => {
         if (err) {

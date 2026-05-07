@@ -1,5 +1,6 @@
 import { buildSpotScores, TEMP_OPTIMAL_C } from "./utils.js";
 import { computeSunExposure } from "./sun-exposure.js";
+import { loadNearbyBuildingData } from "./b3dm-viewer.js";
 import {
     fetchAddressLabelForCoordinates,
     fetchAddressSuggestions,
@@ -258,6 +259,10 @@ async function handlePointSelection(lat, lon, options = {}) {
     }
 
     hideAppHeader();
+
+    loadNearbyBuildingData(lat, lon, { debug: true }).catch((error) => {
+        console.warn("[b3dm] Unexpected error while loading building data", error);
+    });
 
     clearUsedStationsLayer();
     placeQueryMarker(lat, lon, { zoomToMax, addressLabel });
