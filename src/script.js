@@ -1,6 +1,6 @@
 import { buildSpotScores, TEMP_OPTIMAL_C } from "./utils.js";
 import { computeSunDirection, computeSunExposure } from "./sun-exposure.js";
-import { loadNearbyBuildingData, rayIntersectsGltf } from "./b3dm-viewer.js";
+import { latLonHeightToEnu, loadNearbyBuildingData, rayIntersectsGltf } from "./b3dm-viewer.js";
 import {
     fetchAddressLabelForCoordinates,
     fetchAddressSuggestions,
@@ -24,7 +24,6 @@ let queryMarker;
 let usedStationsLayer;
 let addressSearchAbortController;
 let addressSearchTimeout;
-const ENABLE_SUN_DEBUG = new URLSearchParams(window.location.search).has("sunDebug");
 
 document.addEventListener("DOMContentLoaded", () => {
     hideOutput();
@@ -451,7 +450,7 @@ function renderPointResults(
     const generalScoreText = formatScore(spotScores.general);
     const exposureNow = new Date();
     const sunExposure = computeSunExposure(lat, lon, exposureNow, { lookAheadHours: 12, stepMinutes: 5 });
-    const sunlitStatus = evaluateSunlitStatus(lat, lon, exposureNow, buildingData, ENABLE_SUN_DEBUG);
+    const sunlitStatus = evaluateSunlitStatus(lat, lon, exposureNow, buildingData, true);
     const exposureStatus = sunlitStatus.isSunlit === null
         ? "n/a"
         : sunlitStatus.isSunlit
@@ -760,6 +759,7 @@ function formatLocalTime(date, referenceDate) {
 function evaluateSunlitStatus(lat, lon, date, buildingData, debug = false) {
     const sunDirection = computeSunDirection(lat, lon, date);
     const sunExposure = computeSunExposure(lat, lon, date, { lookAheadHours: 12, stepMinutes: 10 });
+    const spotHeight = 1.7;
 
     if (!sunDirection || sunExposure.isSunUp === null) {
         if (debug) {
@@ -823,10 +823,23 @@ function evaluateSunlitStatus(lat, lon, date, buildingData, debug = false) {
             continue;
         }
 
+        const origin = tile.tilesetCenter
+            ? latLonHeightToEnu(lat, lon, spotHeight, tile.tilesetCenter)
+            : [0, 0, 0];
+        const originNote = tile.tilesetCenter ? "ENU from tileset" : "Origin default";
+        if (debug) {
+            console.info("[sun-ray] Tile origin", {
+                tile: tile.tile,
+                origin,
+                originNote,
+                tilesetCenter: tile.tilesetCenter
+            });
+        }
+
         const rayCheck = rayIntersectsGltf(
             tile.gltf,
             {
-                origin: [0, 0, 0],
+                origin: origin ?? [0, 0, 0],
                 direction: sunDirection
             },
             { maxTriangles: 8000 }
@@ -842,14 +855,6 @@ function evaluateSunlitStatus(lat, lon, date, buildingData, debug = false) {
         }
 
         if (rayCheck?.hit) {
-            if (debug) {
-                console.info("[sun-ray] Blocking tile", {
-                    tile: tile.tile,
-                    lat,
-                    lon,
-                    date
-                });
-            }
             return { isSunlit: false, isSunUp: true, reason: "Blocked by geometry" };
         }
     }

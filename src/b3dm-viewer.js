@@ -1,4 +1,6 @@
 const DEFAULT_B3DM_PATH = "./Area 1 neu";
+const DEFAULT_TILESET_URL =
+    "https://daten-hamburg.de/gdi3d/datasource-data/LoD3_untexturiert/tileset.json";
 const DEFAULT_BOUNDS = [
     [53.41062884725186, 9.732240484945219],
     [53.72838568700598, 10.29272015751267]
@@ -90,6 +92,7 @@ const B3DM_TILES = [
 ];
 
 const TILE_INDEX = buildTileIndex(B3DM_TILES);
+let tilesetIndexPromise = null;
 
 export async function loadNearbyBuildingData(lat, lon, options = {}) {
     const {
@@ -99,7 +102,9 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
         neighborRadius = 1,
         maxTiles = 9,
         ray = null,
-        rayOptions = {}
+        rayOptions = {},
+        useTileset = true,
+        tilesetUrl = DEFAULT_TILESET_URL
     } = options;
 
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
@@ -120,6 +125,8 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
         });
     }
 
+    const tilesetIndex = useTileset ? await loadTilesetIndex(tilesetUrl, debug) : null;
+
     const results = await Promise.all(
         tiles.map(async (tile) => {
             const url = `${path}/${tile}`;
@@ -133,6 +140,10 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
                 const header = parseB3dmHeader(buffer);
                 const gltf = extractGltfFromB3dm(buffer);
                 const validation = gltf ? validateGltfPayload(gltf) : null;
+                                const tilesetEntry = tilesetIndex?.get(tile) ?? null;
+                                const tilesetCenter = tilesetEntry?.region
+                                    ? getRegionCenter(tilesetEntry.region)
+                                    : null;
                                 const rayCheck = gltf && ray ? rayIntersectsGltf(gltf, ray, rayOptions) : null;
 
                 if (debug) {
@@ -148,6 +159,13 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
                                   parsedJson: Boolean(gltf.json),
                                   validation
                               }
+                            : null,
+                        tileset: tilesetCenter
+                            ? {
+                                  centerLat: tilesetCenter.lat,
+                                  centerLon: tilesetCenter.lon,
+                                  centerHeight: tilesetCenter.height
+                              }
                             : null
                     });
 
@@ -159,9 +177,25 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
                             reason: rayCheck.reason
                         });
                     }
+
+                    if (useTileset && !tilesetEntry) {
+                        console.info("[b3dm] No tileset mapping for tile", {
+                            tile,
+                            tilesetUrl
+                        });
+                    }
                 }
 
-                return { tile, buffer, header, gltf, validation, rayCheck };
+                return {
+                    tile,
+                    buffer,
+                    header,
+                    gltf,
+                    validation,
+                    rayCheck,
+                    tilesetEntry,
+                    tilesetCenter
+                };
             } catch (error) {
                 if (debug) {
                     console.warn("[b3dm] Failed to load tile", {
@@ -184,6 +218,14 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
     }
 
     return loaded;
+}
+
+export async function loadTilesetIndex(tilesetUrl = DEFAULT_TILESET_URL, debug = false) {
+    if (!tilesetIndexPromise) {
+        tilesetIndexPromise = buildTilesetIndex(tilesetUrl, debug);
+    }
+
+    return tilesetIndexPromise;
 }
 
 export function extractGltfFromB3dm(buffer) {
@@ -522,6 +564,125 @@ function dotVec3(a, b) {
 
 function readVec3(buffer, index) {
     return [buffer[index], buffer[index + 1], buffer[index + 2]];
+}
+
+async function buildTilesetIndex(tilesetUrl, debug) {
+    const index = new Map();
+    const queue = [tilesetUrl];
+    const visited = new Set();
+
+    while (queue.length) {
+        const url = queue.shift();
+        if (visited.has(url)) continue;
+        visited.add(url);
+
+        try {
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            const tileset = await response.json();
+            const baseUrl = new URL(url, url).href;
+            collectTilesetEntries(tileset?.root, baseUrl, index, queue);
+        } catch (error) {
+            if (debug) {
+                console.warn("[b3dm] Failed to load tileset index", {
+                    url,
+                    error: error instanceof Error ? error.message : String(error)
+                });
+            }
+        }
+    }
+
+    if (debug) {
+        console.info("[b3dm] Tileset index loaded", {
+            entries: index.size
+        });
+    }
+
+    return index;
+}
+
+function collectTilesetEntries(node, baseUrl, index, queue) {
+    if (!node) return;
+
+    const contentUri = node.content?.uri || node.content?.url;
+    const contentBounding = node.content?.boundingVolume?.region || node.boundingVolume?.region;
+
+    if (contentUri) {
+        const resolved = new URL(contentUri, baseUrl).href;
+        if (contentUri.endsWith(".json")) {
+            queue.push(resolved);
+        } else if (contentUri.endsWith(".b3dm") && contentBounding) {
+            const fileName = resolved.split("/").pop();
+            if (fileName) {
+                index.set(fileName, { region: contentBounding, url: resolved });
+            }
+        }
+    }
+
+    if (Array.isArray(node.children)) {
+        node.children.forEach((child) => collectTilesetEntries(child, baseUrl, index, queue));
+    }
+}
+
+function getRegionCenter(region) {
+    if (!Array.isArray(region) || region.length < 6) return null;
+    const [west, south, east, north, minHeight, maxHeight] = region;
+    const lon = ((west + east) / 2) * (180 / Math.PI);
+    const lat = ((south + north) / 2) * (180 / Math.PI);
+    const height = (minHeight + maxHeight) / 2;
+    return { lat, lon, height };
+}
+
+export function latLonHeightToEnu(lat, lon, height, origin) {
+    if (!origin || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    const originLat = origin.lat;
+    const originLon = origin.lon;
+    const originHeight = origin.height ?? 0;
+
+    const pointEcef = toEcef(lat, lon, height ?? 0);
+    const originEcef = toEcef(originLat, originLon, originHeight);
+
+    const dx = pointEcef[0] - originEcef[0];
+    const dy = pointEcef[1] - originEcef[1];
+    const dz = pointEcef[2] - originEcef[2];
+
+    const latRad = originLat * (Math.PI / 180);
+    const lonRad = originLon * (Math.PI / 180);
+
+    const sinLat = Math.sin(latRad);
+    const cosLat = Math.cos(latRad);
+    const sinLon = Math.sin(lonRad);
+    const cosLon = Math.cos(lonRad);
+
+    const east = -sinLon * dx + cosLon * dy;
+    const north = -sinLat * cosLon * dx - sinLat * sinLon * dy + cosLat * dz;
+    const up = cosLat * cosLon * dx + cosLat * sinLon * dy + sinLat * dz;
+
+    return [east, north, up];
+}
+
+function toEcef(lat, lon, height) {
+    const a = 6378137.0;
+    const f = 1 / 298.257223563;
+    const e2 = f * (2 - f);
+
+    const latRad = lat * (Math.PI / 180);
+    const lonRad = lon * (Math.PI / 180);
+
+    const sinLat = Math.sin(latRad);
+    const cosLat = Math.cos(latRad);
+    const sinLon = Math.sin(lonRad);
+    const cosLon = Math.cos(lonRad);
+
+    const N = a / Math.sqrt(1 - e2 * sinLat * sinLat);
+
+    const x = (N + height) * cosLat * cosLon;
+    const y = (N + height) * cosLat * sinLon;
+    const z = (N * (1 - e2) + height) * sinLat;
+
+    return [x, y, z];
 }
 
 function pickNearbyTiles(lat, lon, bounds, neighborRadius, maxTiles) {
