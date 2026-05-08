@@ -1,6 +1,11 @@
 import { buildSpotScores, TEMP_OPTIMAL_C } from "./utils.js";
 import { computeSunDirection, computeSunExposure } from "./sun-exposure.js";
-import { latLonHeightToEnu, loadNearbyBuildingData, rayIntersectsGltf } from "./b3dm-viewer.js";
+import {
+    enuDirectionToEcef,
+    latLonHeightToEcef,
+    loadNearbyBuildingData,
+    rayIntersectsGltf
+} from "./b3dm-viewer.js";
 import {
     fetchAddressLabelForCoordinates,
     fetchAddressSuggestions,
@@ -15,6 +20,7 @@ const MAX_ZOOM = 16;
 const ADDRESS_SEARCH_MIN_CHARS = 3;
 const ADDRESS_SEARCH_LIMIT = 5;
 const ADDRESS_SEARCH_DEBOUNCE_MS = 250;
+const SPOT_HEIGHT_METERS = 1.7;
 const HAMBURG_BOUNDS = [
     [53.41062884725186, 9.732240484945219],
     [53.72838568700598, 10.29272015751267]
@@ -22,6 +28,7 @@ const HAMBURG_BOUNDS = [
 let map;
 let queryMarker;
 let usedStationsLayer;
+let buildingTileFootprintsLayer;
 let addressSearchAbortController;
 let addressSearchTimeout;
 
@@ -262,21 +269,36 @@ async function handlePointSelection(lat, lon, options = {}) {
 
     const exposureNow = new Date();
     const sunDirection = computeSunDirection(lat, lon, exposureNow);
+    const rayDirectionWorld = sunDirection ? enuDirectionToEcef(sunDirection, lat, lon) : null;
     const buildingDataPromise = loadNearbyBuildingData(lat, lon, {
         debug: true,
-        ray: sunDirection
+        ray: rayDirectionWorld
             ? {
-                  origin: [0, 0, 0],
-                  direction: sunDirection
+                  origin: latLonHeightToEcef(lat, lon, SPOT_HEIGHT_METERS),
+                  direction: rayDirectionWorld
               }
             : null,
-        rayOptions: { maxTriangles: 8000 }
+        rayOptions: { maxTriangles: 800000 }
     }).catch((error) => {
         console.warn("[b3dm] Unexpected error while loading building data", error);
-        return [];
+        const emptyResult = [];
+        Object.defineProperty(emptyResult, "debugSummary", {
+            value: {
+                selectionMode: "error",
+                requested: 0,
+                loaded: 0,
+                requestedTiles: [],
+                error: error instanceof Error ? error.message : String(error)
+            },
+            configurable: true,
+            enumerable: false,
+            writable: true
+        });
+        return emptyResult;
     });
 
     clearUsedStationsLayer();
+    clearBuildingTileFootprintsLayer();
     placeQueryMarker(lat, lon, { zoomToMax, addressLabel });
     showLoadingOutput("Loading noise and nearest weather data for selected marker...");
 
@@ -289,6 +311,7 @@ async function handlePointSelection(lat, lon, options = {}) {
         const { noiseInfo, weatherSelection, cityTemperatureStats, airQualityInfo } = pointSelection;
 
         renderUsedStationsOnMap(weatherSelection?.usedStations ?? []);
+        renderBuildingTileFootprints(buildingData);
         renderPointResults(
             lat,
             lon,
@@ -300,6 +323,7 @@ async function handlePointSelection(lat, lon, options = {}) {
         );
     } catch (error) {
         clearUsedStationsLayer();
+        clearBuildingTileFootprintsLayer();
         renderQueryError(error instanceof Error ? error.message : "Failed to load marker data.");
     }
 }
@@ -395,6 +419,12 @@ function clearUsedStationsLayer() {
     usedStationsLayer = null;
 }
 
+function clearBuildingTileFootprintsLayer() {
+    if (!map || !buildingTileFootprintsLayer) return;
+    map.removeLayer(buildingTileFootprintsLayer);
+    buildingTileFootprintsLayer = null;
+}
+
 function renderUsedStationsOnMap(usedStations) {
     if (!map) return;
 
@@ -426,6 +456,61 @@ function renderUsedStationsOnMap(usedStations) {
     usedStationsLayer = L.featureGroup(stationMarkers).addTo(map);
 }
 
+function renderBuildingTileFootprints(buildingData) {
+    if (!map) return;
+
+    clearBuildingTileFootprintsLayer();
+
+    if (!Array.isArray(buildingData) || buildingData.length === 0) return;
+
+    const footprintLayers = buildingData.flatMap((tile, index) => {
+        const footprintPolygon = tile?.footprint?.polygonLatLon;
+        if (!Array.isArray(footprintPolygon) || footprintPolygon.length < 3) {
+            return [];
+        }
+
+        const color = getTileDebugColor(index);
+        const polygon = L.polygon(footprintPolygon, {
+            color,
+            weight: 2,
+            opacity: 0.95,
+            fillColor: color,
+            fillOpacity: 0.12
+        });
+
+        polygon.bindTooltip(tile.tile, {
+            sticky: true,
+            direction: "top"
+        });
+
+        polygon.bindPopup(buildTileFootprintPopupHtml(tile));
+
+        const layers = [polygon];
+        if (tile.tilesetCenter && Number.isFinite(tile.tilesetCenter.lat) && Number.isFinite(tile.tilesetCenter.lon)) {
+            const centerMarker = L.circleMarker([tile.tilesetCenter.lat, tile.tilesetCenter.lon], {
+                radius: 4,
+                color,
+                weight: 2,
+                fillColor: "#ffffff",
+                fillOpacity: 0.95
+            });
+
+            centerMarker.bindTooltip(`${tile.tile} center`, {
+                sticky: true,
+                direction: "top"
+            });
+            centerMarker.bindPopup(buildTileFootprintPopupHtml(tile));
+            layers.push(centerMarker);
+        }
+
+        return layers;
+    });
+
+    if (footprintLayers.length === 0) return;
+
+    buildingTileFootprintsLayer = L.featureGroup(footprintLayers).addTo(map);
+}
+
 function renderPointResults(
     lat,
     lon,
@@ -451,6 +536,8 @@ function renderPointResults(
     const exposureNow = new Date();
     const sunExposure = computeSunExposure(lat, lon, exposureNow, { lookAheadHours: 12, stepMinutes: 5 });
     const sunlitStatus = evaluateSunlitStatus(lat, lon, exposureNow, buildingData, true);
+    const buildingDebugSummary = buildingData?.debugSummary ?? null;
+    const sunRayDebug = sunlitStatus.debug ?? null;
     const exposureStatus = sunlitStatus.isSunlit === null
         ? "n/a"
         : sunlitStatus.isSunlit
@@ -481,6 +568,50 @@ function renderPointResults(
     const sunStartLabel = sunStartForecast.nextTime
         ? `Sun exposure starts at ${formatLocalTime(sunStartForecast.nextTime, exposureNow)}`
         : sunStartForecast.reason;
+    const tileChecks = Array.isArray(sunRayDebug?.tileChecks) ? sunRayDebug.tileChecks : [];
+    const tileRows = tileChecks.length
+        ? tileChecks
+              .map(
+                  (tileCheck, index) => `
+                    <li>
+                        <div class="debug-tile__head">
+                            <div class="debug-tile__label">
+                                <span class="debug-color-swatch" style="--tile-color: ${getTileDebugColor(index)}"></span>
+                                <strong>${tileCheck.tile}</strong>
+                            </div>
+                            <span class="debug-chip debug-chip--${formatDebugReasonClass(tileCheck.reason)}">${tileCheck.reason}</span>
+                        </div>
+                        <div class="debug-tile__meta">
+                            <span>Distance: ${formatMeters(tileCheck.selectionDistanceMeters)}</span>
+                            <span>Triangles: ${tileCheck.trianglesTested ?? 0}</span>
+                            <span>Hit: ${tileCheck.hit ? "yes" : "no"}</span>
+                        </div>
+                    </li>
+                `
+              )
+              .join("")
+        : `
+            <li>
+                <div class="debug-tile__head">
+                    <div class="debug-tile__label">
+                        <strong>No tile checks recorded</strong>
+                    </div>
+                </div>
+            </li>
+        `;
+    const debugRequestedText = buildingDebugSummary
+        ? `${buildingDebugSummary.loaded ?? 0}/${buildingDebugSummary.requested ?? 0} tiles`
+        : `${buildingData.length} tiles`;
+    const debugSummaryText = sunRayDebug?.summary ?? sunlitStatus.reason;
+    const debugErrorNote = buildingDebugSummary?.error
+        ? `<p class="section-note section-note--error">Loader error: ${escapeHtml(buildingDebugSummary.error)}</p>`
+        : "";
+    const debugOriginText = formatVector(sunRayDebug?.originWorld);
+    const debugDirectionText = formatVector(sunRayDebug?.directionWorld);
+    const shouldOpenDebugAccordion =
+        sunlitStatus.isSunlit === null ||
+        Boolean(buildingDebugSummary?.error) ||
+        tileChecks.some((tileCheck) => tileCheck.reason === "Triangle limit reached");
 
     const stationRows = usedStations.length
         ? usedStations
@@ -540,7 +671,7 @@ function renderPointResults(
                 <p class="coordinates">${lat.toFixed(5)}, ${lon.toFixed(5)}</p>
             </section>
 
-            <details class="accordion">
+            <details class="accordion"${shouldOpenDebugAccordion ? " open" : ""}>
                 <summary>
                     <div class="accordion__copy">
                         <p class="accordion__eyebrow">Stations</p>
@@ -627,6 +758,27 @@ function renderPointResults(
                         <li><strong>Next change</strong><span>${exposureChangeLabel}</span></li>
                     </ul>
                     <p class="section-note">Sun exposure uses basic ray checks against nearby building tiles. Forecast limited to 12 hours.</p>
+                </div>
+            </details>
+
+            <details class="accordion">
+                <summary>
+                    <div class="accordion__copy">
+                        <p class="accordion__eyebrow">Ray debug</p>
+                        <h4>Sun ray diagnostics</h4>
+                    </div>
+                    <span class="accordion__meta">${debugRequestedText}</span>
+                </summary>
+                <div class="accordion__content">
+                    <ul class="stat-list">
+                        <li><strong>Selection mode</strong><span>${buildingDebugSummary?.selectionMode ?? "n/a"}</span></li>
+                        <li><strong>Status reason</strong><span>${debugSummaryText}</span></li>
+                        <li><strong>Ray origin (ECEF)</strong><span>${debugOriginText}</span></li>
+                        <li><strong>Ray direction (ECEF)</strong><span>${debugDirectionText}</span></li>
+                    </ul>
+                    <p class="section-note">Tile footprints for the loaded adjacent tiles are drawn on the map with the matching colors shown below.</p>
+                    ${debugErrorNote}
+                    <ul class="debug-tile-list">${tileRows}</ul>
                 </div>
             </details>
 
@@ -756,22 +908,115 @@ function formatLocalTime(date, referenceDate) {
     });
 }
 
+function formatMeters(value) {
+    if (!Number.isFinite(value)) return "n/a";
+    if (value >= 1000) return `${(value / 1000).toFixed(2)} km`;
+    return `${Math.round(value)} m`;
+}
+
+function formatVector(vector) {
+    if (!Array.isArray(vector) || vector.length < 3 || vector.some((value) => !Number.isFinite(value))) {
+        return "n/a";
+    }
+
+    return vector.map((value) => value.toFixed(3)).join(", ");
+}
+
+function formatDebugReasonClass(reason) {
+    switch (reason) {
+        case "Hit geometry":
+            return "hit";
+        case "Triangle limit reached":
+            return "limit";
+        case "No hit":
+            return "clear";
+        default:
+            return "neutral";
+    }
+}
+
+function getTileDebugColor(index) {
+    const palette = [
+        "#d64545",
+        "#0e4d25",
+        "#3a7bd5",
+        "#8a5cf6",
+        "#cf7a00",
+        "#0f8b8d",
+        "#9c2c77",
+        "#3f681c",
+        "#8b4513"
+    ];
+
+    return palette[index % palette.length];
+}
+
+function buildTileFootprintPopupHtml(tile) {
+    const footprint = tile?.footprint ?? null;
+    const rayCheck = tile?.rayCheck ?? null;
+    const tileCenter = tile?.tilesetCenter ?? null;
+
+    return `
+        <strong>${escapeHtml(tile?.tile ?? "Tile")}</strong><br/>
+        Distance: ${formatMeters(tile?.selectionDistanceMeters)}<br/>
+        Footprint hull points: ${footprint?.hullPointCount ?? 0}<br/>
+        Footprint sampled points: ${footprint?.sampledPointCount ?? footprint?.sourcePointCount ?? 0}<br/>
+        Footprint total vertices: ${footprint?.totalVertexCount ?? 0}${footprint?.isSampled ? " (sampled)" : ""}<br/>
+        Tile center: ${formatLatLon(tileCenter?.lat, tileCenter?.lon)}<br/>
+        Ray result: ${escapeHtml(rayCheck?.reason ?? "n/a")}<br/>
+        Triangles tested: ${rayCheck?.trianglesTested ?? 0}
+    `;
+}
+
+function formatLatLon(lat, lon) {
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return "n/a";
+    return `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+}
+
+function escapeHtml(value) {
+    if (typeof value !== "string") return "";
+
+    return value
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll("\"", "&quot;")
+        .replaceAll("'", "&#39;");
+}
+
 function evaluateSunlitStatus(lat, lon, date, buildingData, debug = false) {
     const sunDirection = computeSunDirection(lat, lon, date);
     const sunExposure = computeSunExposure(lat, lon, date, { lookAheadHours: 12, stepMinutes: 10 });
-    const spotHeight = 1.7;
+    const rayDirectionWorld = sunDirection ? enuDirectionToEcef(sunDirection, lat, lon) : null;
+    const rayOriginWorld = latLonHeightToEcef(lat, lon, SPOT_HEIGHT_METERS);
+    const tileChecks = [];
+    const baseDebug = {
+        originWorld: rayOriginWorld,
+        directionWorld: rayDirectionWorld,
+        tilesLoaded: Array.isArray(buildingData) ? buildingData.length : 0,
+        tileChecks
+    };
 
-    if (!sunDirection || sunExposure.isSunUp === null) {
+    if (!sunDirection || !rayDirectionWorld || sunExposure.isSunUp === null) {
         if (debug) {
             console.info("[sun-ray] Missing sun direction", {
                 lat,
                 lon,
                 date,
                 sunDirection,
+                rayDirectionWorld,
                 isSunUp: sunExposure.isSunUp
             });
         }
-        return { isSunlit: null, isSunUp: sunExposure.isSunUp, reason: "No sun position" };
+        return {
+            isSunlit: null,
+            isSunUp: sunExposure.isSunUp,
+            reason: "No sun position",
+            debug: {
+                ...baseDebug,
+                summary: "No sun position"
+            }
+        };
     }
 
     if (!sunExposure.isSunUp) {
@@ -784,7 +1029,15 @@ function evaluateSunlitStatus(lat, lon, date, buildingData, debug = false) {
                 azimuthDeg: sunExposure.azimuthDeg
             });
         }
-        return { isSunlit: false, isSunUp: false, reason: "Sun below horizon" };
+        return {
+            isSunlit: false,
+            isSunUp: false,
+            reason: "Sun below horizon",
+            debug: {
+                ...baseDebug,
+                summary: "Sun below horizon"
+            }
+        };
     }
 
     if (!Array.isArray(buildingData) || buildingData.length === 0) {
@@ -796,7 +1049,15 @@ function evaluateSunlitStatus(lat, lon, date, buildingData, debug = false) {
                 direction: sunDirection
             });
         }
-        return { isSunlit: true, isSunUp: true, reason: "No building data" };
+        return {
+            isSunlit: true,
+            isSunUp: true,
+            reason: "No building data",
+            debug: {
+                ...baseDebug,
+                summary: "No building data"
+            }
+        };
     }
 
     if (debug) {
@@ -805,11 +1066,15 @@ function evaluateSunlitStatus(lat, lon, date, buildingData, debug = false) {
             lon,
             date,
             direction: sunDirection,
+            directionWorld: rayDirectionWorld,
+            originWorld: rayOriginWorld,
             tilesLoaded: buildingData.length,
             altitudeDeg: sunExposure.altitudeDeg,
             azimuthDeg: sunExposure.azimuthDeg
         });
     }
+
+    let raycastIncomplete = false;
 
     for (const tile of buildingData) {
         if (!tile?.gltf || tile?.validation?.isValid === false) {
@@ -823,15 +1088,11 @@ function evaluateSunlitStatus(lat, lon, date, buildingData, debug = false) {
             continue;
         }
 
-        const origin = tile.tilesetCenter
-            ? latLonHeightToEnu(lat, lon, spotHeight, tile.tilesetCenter)
-            : [0, 0, 0];
-        const originNote = tile.tilesetCenter ? "ENU from tileset" : "Origin default";
         if (debug) {
             console.info("[sun-ray] Tile origin", {
                 tile: tile.tile,
-                origin,
-                originNote,
+                originWorld: rayOriginWorld,
+                rtcCenter: tile.rtcCenter,
                 tilesetCenter: tile.tilesetCenter
             });
         }
@@ -839,10 +1100,13 @@ function evaluateSunlitStatus(lat, lon, date, buildingData, debug = false) {
         const rayCheck = rayIntersectsGltf(
             tile.gltf,
             {
-                origin: origin ?? [0, 0, 0],
-                direction: sunDirection
+                origin: rayOriginWorld,
+                direction: rayDirectionWorld
             },
-            { maxTriangles: 8000 }
+            {
+                maxTriangles: 800000,
+                modelMatrix: tile.modelMatrix
+            }
         );
 
         if (debug) {
@@ -854,9 +1118,50 @@ function evaluateSunlitStatus(lat, lon, date, buildingData, debug = false) {
             });
         }
 
+        tileChecks.push({
+            tile: tile.tile,
+            selectionDistanceMeters: tile.selectionDistanceMeters,
+            hit: Boolean(rayCheck?.hit),
+            trianglesTested: rayCheck?.trianglesTested ?? 0,
+            reason: rayCheck?.reason ?? "No result"
+        });
+
         if (rayCheck?.hit) {
-            return { isSunlit: false, isSunUp: true, reason: "Blocked by geometry" };
+            return {
+                isSunlit: false,
+                isSunUp: true,
+                reason: "Blocked by geometry",
+                debug: {
+                    ...baseDebug,
+                    blockedTile: tile.tile,
+                    summary: `Blocked by ${tile.tile}`
+                }
+            };
         }
+
+        if (rayCheck?.reason === "Triangle limit reached") {
+            raycastIncomplete = true;
+        }
+    }
+
+    if (raycastIncomplete) {
+        if (debug) {
+            console.info("[sun-ray] Raycast incomplete", {
+                lat,
+                lon,
+                date
+            });
+        }
+
+        return {
+            isSunlit: null,
+            isSunUp: true,
+            reason: "Raycast incomplete",
+            debug: {
+                ...baseDebug,
+                summary: "Triangle budget exhausted before completing the raycast"
+            }
+        };
     }
 
     if (debug) {
@@ -867,7 +1172,15 @@ function evaluateSunlitStatus(lat, lon, date, buildingData, debug = false) {
         });
     }
 
-    return { isSunlit: true, isSunUp: true, reason: "Clear" };
+    return {
+        isSunlit: true,
+        isSunUp: true,
+        reason: "Clear",
+        debug: {
+            ...baseDebug,
+            summary: "No blocking geometry hit"
+        }
+    };
 }
 
 function findNextSunlitTime(lat, lon, now, buildingData, currentStatus, options = {}) {

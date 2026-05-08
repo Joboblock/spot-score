@@ -593,9 +593,14 @@ button:focus-visible,
     line-height: 1.45;
 }
 
+.section-note--error {
+    color: var(--color-error);
+}
+
 .station-list,
 .stat-list,
-.score-list {
+.score-list,
+.debug-tile-list {
     list-style: none;
     padding: 0;
     margin: 0;
@@ -655,13 +660,15 @@ button:focus-visible,
 }
 
 .stat-list,
-.score-list {
+.score-list,
+.debug-tile-list {
     display: grid;
     gap: 10px;
 }
 
 .stat-list li,
-.score-list li {
+.score-list li,
+.debug-tile-list li {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -680,6 +687,71 @@ button:focus-visible,
 
 .score-list li span {
     font-weight: 700;
+}
+
+.debug-tile-list li {
+    display: grid;
+    gap: 10px;
+}
+
+.debug-tile__head,
+.debug-tile__meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.debug-tile__meta {
+    color: var(--text-secondary);
+    font-size: 0.86rem;
+}
+
+.debug-tile__label {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.debug-color-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 999px;
+    background: var(--tile-color, var(--color-forest));
+    box-shadow: inset 0 0 0 1px rgba(17, 17, 17, 0.15);
+    flex: 0 0 auto;
+}
+
+.debug-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 5px 9px;
+    border-radius: 999px;
+    border: 1px solid rgba(17, 17, 17, 0.08);
+    background: var(--color-muted);
+    color: var(--text-primary);
+    font-size: 0.78rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.debug-chip--hit {
+    background: rgba(214, 69, 69, 0.12);
+    color: #8b1f1f;
+    border-color: rgba(214, 69, 69, 0.25);
+}
+
+.debug-chip--limit {
+    background: rgba(242, 233, 14, 0.18);
+    color: #665d00;
+    border-color: rgba(242, 233, 14, 0.35);
+}
+
+.debug-chip--clear {
+    background: rgba(14, 77, 37, 0.12);
+    color: var(--color-forest);
+    border-color: rgba(14, 77, 37, 0.2);
 }
 
 .score-kicker {

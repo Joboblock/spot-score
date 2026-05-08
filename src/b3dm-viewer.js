@@ -1,3 +1,5 @@
+import { LOCAL_B3DM_TILE_METADATA } from "./b3dm-local-tiles.js";
+
 const DEFAULT_B3DM_PATH = "./Area 1 neu";
 const DEFAULT_TILESET_URL =
     "https://daten-hamburg.de/gdi3d/datasource-data/LoD3_untexturiert/tileset.json";
@@ -91,8 +93,15 @@ const B3DM_TILES = [
     "7635.b3dm"
 ];
 
-const TILE_INDEX = buildTileIndex(B3DM_TILES);
 let tilesetIndexPromise = null;
+const IDENTITY_MATRIX_4 = Object.freeze([
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 1
+]);
+const DEFAULT_FOOTPRINT_MAX_POINTS = 12000;
+const ACCESSOR_CACHE = new WeakMap();
 
 export async function loadNearbyBuildingData(lat, lon, options = {}) {
     const {
@@ -103,6 +112,7 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
         maxTiles = 9,
         ray = null,
         rayOptions = {},
+        includeFootprints = true,
         useTileset = true,
         tilesetUrl = DEFAULT_TILESET_URL
     } = options;
@@ -114,22 +124,43 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
         return [];
     }
 
-    const { tiles, targetKey } = pickNearbyTiles(lat, lon, bounds, neighborRadius, maxTiles);
+    const localTilePath = isLocalTilePath(path);
+    const tilesetIndex = useTileset && !localTilePath ? await loadTilesetIndex(tilesetUrl, debug) : null;
+    const tileRequests = localTilePath
+        ? pickNearbyLocalTiles(lat, lon, Math.max(1, maxTiles)).map((entry) => ({
+              tile: entry.tile,
+              url: `${path}/${entry.tile}`,
+              tileCenter: {
+                  lat: entry.lat,
+                  lon: entry.lon,
+                  height: entry.height ?? 0
+              },
+              selectionDistanceMeters: entry.distanceMeters,
+              tilesetEntry: null
+          }))
+        : pickNearbyTilesetEntries(lat, lon, tilesetIndex, {
+              maxTiles: Math.max(1, maxTiles),
+              neighborRadius
+          }).map((entry) => ({
+              tile: entry.tile,
+              url: entry.url,
+              tileCenter: entry.center,
+              selectionDistanceMeters: entry.distanceMeters,
+              tilesetEntry: entry
+          }));
 
     if (debug) {
         console.info("[b3dm] Attempting to load nearby tiles", {
             lat,
             lon,
-            targetKey,
-            tiles
+            selectionMode: localTilePath ? "local-centers" : "tileset-regions",
+            tiles: tileRequests.map((request) => request.tile)
         });
     }
 
-    const tilesetIndex = useTileset ? await loadTilesetIndex(tilesetUrl, debug) : null;
-
     const results = await Promise.all(
-        tiles.map(async (tile) => {
-            const url = `${path}/${tile}`;
+        tileRequests.map(async (tileRequest) => {
+            const { tile, url, tileCenter, selectionDistanceMeters, tilesetEntry } = tileRequest;
             try {
                 const response = await fetch(url);
                 if (!response.ok) {
@@ -138,13 +169,26 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
 
                 const buffer = await response.arrayBuffer();
                 const header = parseB3dmHeader(buffer);
+                const featureTable = extractFeatureTableJson(buffer);
                 const gltf = extractGltfFromB3dm(buffer);
                 const validation = gltf ? validateGltfPayload(gltf) : null;
-                                const tilesetEntry = tilesetIndex?.get(tile) ?? null;
-                                const tilesetCenter = tilesetEntry?.region
-                                    ? getRegionCenter(tilesetEntry.region)
-                                    : null;
-                                const rayCheck = gltf && ray ? rayIntersectsGltf(gltf, ray, rayOptions) : null;
+                const tilesetCenter = tilesetEntry?.region
+                    ? getRegionCenter(tilesetEntry.region)
+                    : tileCenter;
+                const rtcCenter = getRtcCenter(featureTable, gltf);
+                const modelMatrix = buildModelMatrix(rtcCenter, tilesetEntry?.transform);
+                const footprint = gltf && includeFootprints && tilesetCenter
+                    ? computeGltfFootprint(gltf, {
+                          modelMatrix,
+                          referenceCenter: tilesetCenter
+                      })
+                    : null;
+                const rayCheck = gltf && ray
+                    ? rayIntersectsGltf(gltf, ray, {
+                          ...rayOptions,
+                          modelMatrix
+                      })
+                    : null;
 
                 if (debug) {
                     console.info("[b3dm] Loaded tile", {
@@ -158,6 +202,14 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
                                   hasBinaryChunk: Boolean(gltf.binaryChunk),
                                   parsedJson: Boolean(gltf.json),
                                   validation
+                              }
+                            : null,
+                        rtcCenter,
+                        selectionDistanceMeters,
+                        footprint: footprint
+                            ? {
+                                  hullPointCount: footprint.hullPointCount,
+                                  sourcePointCount: footprint.sourcePointCount
                               }
                             : null,
                         tileset: tilesetCenter
@@ -178,7 +230,7 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
                         });
                     }
 
-                    if (useTileset && !tilesetEntry) {
+                    if (useTileset && !localTilePath && !tilesetEntry) {
                         console.info("[b3dm] No tileset mapping for tile", {
                             tile,
                             tilesetUrl
@@ -190,11 +242,16 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
                     tile,
                     buffer,
                     header,
+                    featureTable,
                     gltf,
                     validation,
                     rayCheck,
                     tilesetEntry,
-                    tilesetCenter
+                    tilesetCenter,
+                    rtcCenter,
+                    modelMatrix,
+                    selectionDistanceMeters,
+                    footprint
                 };
             } catch (error) {
                 if (debug) {
@@ -209,13 +266,30 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
     );
 
     const loaded = results.filter(Boolean);
+    const debugSummary = {
+        selectionMode: localTilePath ? "local-centers" : "tileset-regions",
+        requested: tileRequests.length,
+        loaded: loaded.length,
+        requestedTiles: tileRequests.map((request) => ({
+            tile: request.tile,
+            selectionDistanceMeters: request.selectionDistanceMeters,
+            tileCenter: request.tileCenter
+        }))
+    };
 
     if (debug) {
         console.info("[b3dm] Building data load summary", {
-            requested: tiles.length,
-            loaded: loaded.length
+            requested: debugSummary.requested,
+            loaded: debugSummary.loaded
         });
     }
+
+    Object.defineProperty(loaded, "debugSummary", {
+        value: debugSummary,
+        configurable: true,
+        enumerable: false,
+        writable: true
+    });
 
     return loaded;
 }
@@ -319,6 +393,36 @@ export function extractGltfFromB3dm(buffer) {
     };
 }
 
+function extractFeatureTableJson(buffer) {
+    const header = parseB3dmHeader(buffer);
+    if (!header || header.magic !== "b3dm" || buffer.byteLength < 28) {
+        return null;
+    }
+
+    const view = new DataView(buffer);
+    const featureTableJsonByteLength = view.getUint32(12, true);
+
+    if (featureTableJsonByteLength <= 0) {
+        return null;
+    }
+
+    const jsonStart = 28;
+    const jsonEnd = jsonStart + featureTableJsonByteLength;
+
+    if (jsonEnd > buffer.byteLength) {
+        return null;
+    }
+
+    try {
+        const featureTableJson = new TextDecoder("utf-8").decode(
+            new Uint8Array(buffer.slice(jsonStart, jsonEnd))
+        );
+        return JSON.parse(featureTableJson);
+    } catch (_error) {
+        return null;
+    }
+}
+
 export function validateGltfPayload(gltf) {
     const issues = [];
 
@@ -378,45 +482,37 @@ export function rayIntersectsGltf(gltf, ray, options = {}) {
     }
 
     const json = gltf.json;
+    const sceneRootNodes = getSceneRootNodes(json);
+    const modelMatrix = isMatrix4(options.modelMatrix) ? options.modelMatrix : IDENTITY_MATRIX_4;
     let trianglesTested = 0;
 
-    for (const mesh of json.meshes ?? []) {
-        for (const primitive of mesh.primitives ?? []) {
-            const positionAccessorIndex = primitive.attributes?.POSITION;
-            if (positionAccessorIndex === undefined) continue;
+    for (const nodeIndex of sceneRootNodes) {
+        const hit = testRayAgainstNode(
+            gltf,
+            nodeIndex,
+            modelMatrix,
+            origin,
+            direction,
+            maxTriangles,
+            trianglesTested
+        );
 
-            const positions = getAccessorData(gltf, positionAccessorIndex);
-            if (!positions) continue;
+        trianglesTested = hit.trianglesTested;
 
-            const indices =
-                primitive.indices !== undefined ? getAccessorData(gltf, primitive.indices) : null;
+        if (hit.hit) {
+            return {
+                hit: true,
+                trianglesTested,
+                reason: "Hit geometry"
+            };
+        }
 
-            const hit = testRayAgainstPrimitive(
-                origin,
-                direction,
-                positions,
-                indices,
-                maxTriangles,
-                trianglesTested
-            );
-
-            trianglesTested = hit.trianglesTested;
-
-            if (hit.hit) {
-                return {
-                    hit: true,
-                    trianglesTested,
-                    reason: "Hit geometry"
-                };
-            }
-
-            if (trianglesTested >= maxTriangles) {
-                return {
-                    hit: false,
-                    trianglesTested,
-                    reason: "Triangle limit reached"
-                };
-            }
+        if (trianglesTested >= maxTriangles) {
+            return {
+                hit: false,
+                trianglesTested,
+                reason: "Triangle limit reached"
+            };
         }
     }
 
@@ -427,11 +523,283 @@ export function rayIntersectsGltf(gltf, ray, options = {}) {
     };
 }
 
-function testRayAgainstPrimitive(origin, direction, positions, indices, maxTriangles, startCount) {
+export function computeGltfFootprint(gltf, options = {}) {
+    const validation = validateGltfPayload(gltf);
+    if (!validation.isValid) {
+        return null;
+    }
+
+    const referenceCenter = options.referenceCenter;
+    if (
+        !referenceCenter ||
+        !Number.isFinite(referenceCenter.lat) ||
+        !Number.isFinite(referenceCenter.lon)
+    ) {
+        return null;
+    }
+
+    const json = gltf.json;
+    const sceneRootNodes = getSceneRootNodes(json);
+    const modelMatrix = isMatrix4(options.modelMatrix) ? options.modelMatrix : IDENTITY_MATRIX_4;
+    const maxPointCount =
+        Number.isFinite(options.maxPointCount) && options.maxPointCount > 0
+            ? Math.floor(options.maxPointCount)
+            : DEFAULT_FOOTPRINT_MAX_POINTS;
+    const footprintPoints = [];
+    const footprintSources = [];
+    const footprintStats = {
+        sampledPointCount: 0,
+        totalVertexCount: 0,
+        maxPointCount,
+        isSampled: false
+    };
+
+    for (const nodeIndex of sceneRootNodes) {
+        collectFootprintSourcesForNode(gltf, nodeIndex, modelMatrix, footprintSources);
+    }
+
+    if (footprintSources.length === 0) {
+        return null;
+    }
+
+    footprintStats.totalVertexCount = footprintSources.reduce(
+        (sum, source) => sum + (Number.isFinite(source.vertexCount) ? source.vertexCount : 0),
+        0
+    );
+
+    for (
+        let sourceIndex = 0;
+        sourceIndex < footprintSources.length && footprintStats.sampledPointCount < footprintStats.maxPointCount;
+        sourceIndex += 1
+    ) {
+        appendFootprintSourcePoints(
+            gltf,
+            footprintSources[sourceIndex],
+            referenceCenter,
+            footprintPoints,
+            footprintStats,
+            footprintSources.length - sourceIndex
+        );
+    }
+
+    if (footprintPoints.length < 3) {
+        return null;
+    }
+
+    const hull = buildConvexHull2d(footprintPoints);
+
+    if (hull.length < 3) {
+        return null;
+    }
+
+    return {
+        polygonLatLon: hull.map((point) => [point.lat, point.lon]),
+        hullPointCount: hull.length,
+        sourcePointCount: footprintPoints.length,
+        sampledPointCount: footprintStats.sampledPointCount,
+        totalVertexCount: footprintStats.totalVertexCount,
+        isSampled: footprintStats.isSampled
+    };
+}
+
+function collectFootprintSourcesForNode(gltf, nodeIndex, parentMatrix, footprintSources) {
+    const node = gltf?.json?.nodes?.[nodeIndex];
+    if (!node) return;
+
+    const localMatrix = getNodeLocalMatrix(node);
+    const worldMatrix = multiplyMat4(parentMatrix, localMatrix);
+
+    if (Number.isInteger(node.mesh)) {
+        const mesh = gltf.json.meshes?.[node.mesh];
+        collectFootprintSourcesForMesh(gltf, mesh, worldMatrix, footprintSources);
+    }
+
+    for (const childIndex of node.children ?? []) {
+        collectFootprintSourcesForNode(gltf, childIndex, worldMatrix, footprintSources);
+    }
+}
+
+function collectFootprintSourcesForMesh(gltf, mesh, worldMatrix, footprintSources) {
+    for (const primitive of mesh?.primitives ?? []) {
+        const positionAccessorIndex = primitive.attributes?.POSITION;
+        if (positionAccessorIndex === undefined) continue;
+
+        const accessor = gltf.json.accessors?.[positionAccessorIndex];
+        footprintSources.push({
+            accessorIndex: positionAccessorIndex,
+            worldMatrix,
+            vertexCount: Number.isFinite(accessor?.count) ? accessor.count : 8
+        });
+    }
+}
+
+function appendFootprintSourcePoints(
+    gltf,
+    source,
+    referenceCenter,
+    footprintPoints,
+    footprintStats,
+    remainingSourceCount
+) {
+    const remainingBudget = Math.max(0, footprintStats.maxPointCount - footprintStats.sampledPointCount);
+    if (remainingBudget === 0) {
+        footprintStats.isSampled = true;
+        return;
+    }
+
+    const sourceBudget = Math.max(1, Math.ceil(remainingBudget / Math.max(1, remainingSourceCount)));
+    const accessor = gltf?.json?.accessors?.[source.accessorIndex];
+    const positions = getAccessorData(gltf, source.accessorIndex);
+
+    if (positions) {
+        const vertexCount = Math.floor(positions.length / 3);
+        const useTransform = !isIdentityMatrix4(source.worldMatrix);
+        const stride = Math.max(1, Math.ceil(vertexCount / sourceBudget));
+
+        if (stride > 1) {
+            footprintStats.isSampled = true;
+        }
+
+        for (
+            let vertexIndex = 0;
+            vertexIndex < vertexCount && footprintStats.sampledPointCount < footprintStats.maxPointCount;
+            vertexIndex += stride
+        ) {
+            const worldPoint = readVec3(positions, vertexIndex * 3, source.worldMatrix, useTransform);
+            const latLonHeight = ecefToLatLonHeight(worldPoint);
+            if (!latLonHeight) continue;
+
+            footprintPoints.push(projectLatLonToLocalPoint(latLonHeight, referenceCenter));
+            footprintStats.sampledPointCount += 1;
+        }
+
+        return;
+    }
+
+    const corners = getTransformedAccessorCorners(accessor, source.worldMatrix);
+    if (!corners.length) {
+        return;
+    }
+
+    const stride = Math.max(1, Math.ceil(corners.length / sourceBudget));
+    if (stride > 1) {
+        footprintStats.isSampled = true;
+    }
+
+    for (
+        let pointIndex = 0;
+        pointIndex < corners.length && footprintStats.sampledPointCount < footprintStats.maxPointCount;
+        pointIndex += stride
+    ) {
+        const latLonHeight = ecefToLatLonHeight(corners[pointIndex]);
+        if (!latLonHeight) continue;
+
+        footprintPoints.push(projectLatLonToLocalPoint(latLonHeight, referenceCenter));
+        footprintStats.sampledPointCount += 1;
+    }
+}
+
+function testRayAgainstNode(gltf, nodeIndex, parentMatrix, origin, direction, maxTriangles, startCount) {
+    const node = gltf?.json?.nodes?.[nodeIndex];
+    if (!node) {
+        return { hit: false, trianglesTested: startCount };
+    }
+
+    const localMatrix = getNodeLocalMatrix(node);
+    const worldMatrix = multiplyMat4(parentMatrix, localMatrix);
+    let trianglesTested = startCount;
+
+    if (Number.isInteger(node.mesh)) {
+        const mesh = gltf.json.meshes?.[node.mesh];
+        const hit = testRayAgainstMesh(
+            gltf,
+            mesh,
+            worldMatrix,
+            origin,
+            direction,
+            maxTriangles,
+            trianglesTested
+        );
+        trianglesTested = hit.trianglesTested;
+
+        if (hit.hit || trianglesTested >= maxTriangles) {
+            return { hit: hit.hit, trianglesTested };
+        }
+    }
+
+    for (const childIndex of node.children ?? []) {
+        const hit = testRayAgainstNode(
+            gltf,
+            childIndex,
+            worldMatrix,
+            origin,
+            direction,
+            maxTriangles,
+            trianglesTested
+        );
+        trianglesTested = hit.trianglesTested;
+
+        if (hit.hit || trianglesTested >= maxTriangles) {
+            return { hit: hit.hit, trianglesTested };
+        }
+    }
+
+    return { hit: false, trianglesTested };
+}
+
+function testRayAgainstMesh(gltf, mesh, worldMatrix, origin, direction, maxTriangles, startCount) {
+    let trianglesTested = startCount;
+
+    for (const primitive of mesh?.primitives ?? []) {
+        const positionAccessorIndex = primitive.attributes?.POSITION;
+        if (positionAccessorIndex === undefined) continue;
+
+        const positionAccessor = gltf.json.accessors?.[positionAccessorIndex];
+        const worldBounds = getTransformedAccessorBounds(positionAccessor, worldMatrix);
+        if (worldBounds && !rayIntersectsAabb(origin, direction, worldBounds.min, worldBounds.max)) {
+            continue;
+        }
+
+        const positions = getAccessorData(gltf, positionAccessorIndex);
+        if (!positions) continue;
+
+        const indices =
+            primitive.indices !== undefined ? getAccessorData(gltf, primitive.indices) : null;
+
+        const hit = testRayAgainstPrimitive(
+            origin,
+            direction,
+            positions,
+            indices,
+            worldMatrix,
+            maxTriangles,
+            trianglesTested
+        );
+
+        trianglesTested = hit.trianglesTested;
+
+        if (hit.hit || trianglesTested >= maxTriangles) {
+            return { hit: hit.hit, trianglesTested };
+        }
+    }
+
+    return { hit: false, trianglesTested };
+}
+
+function testRayAgainstPrimitive(
+    origin,
+    direction,
+    positions,
+    indices,
+    worldMatrix,
+    maxTriangles,
+    startCount
+) {
     let trianglesTested = startCount;
 
     const positionStride = 3;
     const indexArray = indices ? Array.from(indices) : null;
+    const useTransform = !isIdentityMatrix4(worldMatrix);
 
     const triangleCount = indexArray ? Math.floor(indexArray.length / 3) : positions.length / 9;
 
@@ -443,9 +811,9 @@ function testRayAgainstPrimitive(origin, direction, positions, indices, maxTrian
         const idx1 = indexArray ? indexArray[indexBase + 1] : indexBase + 1;
         const idx2 = indexArray ? indexArray[indexBase + 2] : indexBase + 2;
 
-        const v0 = readVec3(positions, idx0 * positionStride);
-        const v1 = readVec3(positions, idx1 * positionStride);
-        const v2 = readVec3(positions, idx2 * positionStride);
+        const v0 = readVec3(positions, idx0 * positionStride, worldMatrix, useTransform);
+        const v1 = readVec3(positions, idx1 * positionStride, worldMatrix, useTransform);
+        const v2 = readVec3(positions, idx2 * positionStride, worldMatrix, useTransform);
 
         trianglesTested += 1;
 
@@ -458,6 +826,15 @@ function testRayAgainstPrimitive(origin, direction, positions, indices, maxTrian
 }
 
 function getAccessorData(gltf, accessorIndex) {
+    if (!ACCESSOR_CACHE.has(gltf)) {
+        ACCESSOR_CACHE.set(gltf, new Map());
+    }
+
+    const cache = ACCESSOR_CACHE.get(gltf);
+    if (cache.has(accessorIndex)) {
+        return cache.get(accessorIndex);
+    }
+
     const accessor = gltf?.json?.accessors?.[accessorIndex];
     if (!accessor) return null;
 
@@ -470,32 +847,90 @@ function getAccessorData(gltf, accessorIndex) {
 
     if (!componentSize || !elementSize) return null;
 
+    const itemComponentCount = accessor.count * elementSize;
+    const itemByteSize = elementSize * componentSize;
     const byteOffset = (bufferView.byteOffset ?? 0) + (accessor.byteOffset ?? 0);
-    const byteLength = accessor.count * elementSize * componentSize;
+    const byteStride = bufferView.byteStride ?? itemByteSize;
+    const byteLength = (accessor.count - 1) * byteStride + itemByteSize;
 
     if (byteOffset + byteLength > gltf.binaryChunk.byteLength) return null;
 
-    const slice = gltf.binaryChunk.slice(byteOffset, byteOffset + byteLength);
+    if (byteStride < itemByteSize) {
+        return null;
+    }
 
+    const result = createAccessorArray(componentType, itemComponentCount);
+    if (!result) {
+        return null;
+    }
+
+    const view = new DataView(gltf.binaryChunk);
+
+    for (let itemIndex = 0; itemIndex < accessor.count; itemIndex += 1) {
+        const sourceOffset = byteOffset + itemIndex * byteStride;
+        const targetOffset = itemIndex * elementSize;
+
+        for (let componentIndex = 0; componentIndex < elementSize; componentIndex += 1) {
+            result[targetOffset + componentIndex] = readComponent(
+                view,
+                sourceOffset + componentIndex * componentSize,
+                componentType
+            );
+        }
+    }
+
+    cache.set(accessorIndex, result);
+    return result;
+}
+
+function createAccessorArray(componentType, length) {
     switch (componentType) {
-        case 5126:
-            return new Float32Array(slice);
+        case 5120:
+            return new Int8Array(length);
+        case 5121:
+            return new Uint8Array(length);
+        case 5122:
+            return new Int16Array(length);
         case 5123:
-            return new Uint16Array(slice);
+            return new Uint16Array(length);
         case 5125:
-            return new Uint32Array(slice);
+            return new Uint32Array(length);
+        case 5126:
+            return new Float32Array(length);
         default:
             return null;
     }
 }
 
+function readComponent(view, byteOffset, componentType) {
+    switch (componentType) {
+        case 5120:
+            return view.getInt8(byteOffset);
+        case 5121:
+            return view.getUint8(byteOffset);
+        case 5122:
+            return view.getInt16(byteOffset, true);
+        case 5123:
+            return view.getUint16(byteOffset, true);
+        case 5125:
+            return view.getUint32(byteOffset, true);
+        case 5126:
+            return view.getFloat32(byteOffset, true);
+        default:
+            return 0;
+    }
+}
+
 function getComponentSize(componentType) {
     switch (componentType) {
-        case 5126:
-            return 4;
+        case 5120:
+        case 5121:
+            return 1;
+        case 5122:
         case 5123:
             return 2;
         case 5125:
+        case 5126:
             return 4;
         default:
             return null;
@@ -539,6 +974,44 @@ function rayIntersectsTriangle(origin, direction, v0, v1, v2) {
     return t > epsilon;
 }
 
+function rayIntersectsAabb(origin, direction, min, max) {
+    let tMin = -Infinity;
+    let tMax = Infinity;
+
+    for (let axis = 0; axis < 3; axis += 1) {
+        const axisOrigin = origin[axis];
+        const axisDirection = direction[axis];
+        const axisMin = min[axis];
+        const axisMax = max[axis];
+
+        if (Math.abs(axisDirection) < 1e-12) {
+            if (axisOrigin < axisMin || axisOrigin > axisMax) {
+                return false;
+            }
+            continue;
+        }
+
+        const inverseDirection = 1 / axisDirection;
+        let t1 = (axisMin - axisOrigin) * inverseDirection;
+        let t2 = (axisMax - axisOrigin) * inverseDirection;
+
+        if (t1 > t2) {
+            const temp = t1;
+            t1 = t2;
+            t2 = temp;
+        }
+
+        tMin = Math.max(tMin, t1);
+        tMax = Math.min(tMax, t2);
+
+        if (tMax < tMin) {
+            return false;
+        }
+    }
+
+    return tMax >= Math.max(0, tMin);
+}
+
 function normalizeVec3(vec) {
     if (!Array.isArray(vec) || vec.length < 3) return null;
     const length = Math.sqrt(vec[0] ** 2 + vec[1] ** 2 + vec[2] ** 2);
@@ -562,17 +1035,84 @@ function dotVec3(a, b) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
-function readVec3(buffer, index) {
-    return [buffer[index], buffer[index + 1], buffer[index + 2]];
+function readVec3(buffer, index, matrix = IDENTITY_MATRIX_4, applyTransform = false) {
+    const point = [buffer[index], buffer[index + 1], buffer[index + 2]];
+    return applyTransform ? transformPointMat4(matrix, point) : point;
+}
+
+function getTransformedAccessorBounds(accessor, worldMatrix) {
+    const min = accessor?.min;
+    const max = accessor?.max;
+
+    if (
+        !Array.isArray(min) ||
+        !Array.isArray(max) ||
+        min.length < 3 ||
+        max.length < 3 ||
+        !min.every(Number.isFinite) ||
+        !max.every(Number.isFinite)
+    ) {
+        return null;
+    }
+
+    const corners = [
+        [min[0], min[1], min[2]],
+        [min[0], min[1], max[2]],
+        [min[0], max[1], min[2]],
+        [min[0], max[1], max[2]],
+        [max[0], min[1], min[2]],
+        [max[0], min[1], max[2]],
+        [max[0], max[1], min[2]],
+        [max[0], max[1], max[2]]
+    ].map((corner) => transformPointMat4(worldMatrix, corner));
+
+    const worldMin = [Infinity, Infinity, Infinity];
+    const worldMax = [-Infinity, -Infinity, -Infinity];
+
+    for (const corner of corners) {
+        for (let axis = 0; axis < 3; axis += 1) {
+            worldMin[axis] = Math.min(worldMin[axis], corner[axis]);
+            worldMax[axis] = Math.max(worldMax[axis], corner[axis]);
+        }
+    }
+
+    return { min: worldMin, max: worldMax };
+}
+
+function getTransformedAccessorCorners(accessor, worldMatrix) {
+    const min = accessor?.min;
+    const max = accessor?.max;
+
+    if (
+        !Array.isArray(min) ||
+        !Array.isArray(max) ||
+        min.length < 3 ||
+        max.length < 3 ||
+        !min.every(Number.isFinite) ||
+        !max.every(Number.isFinite)
+    ) {
+        return [];
+    }
+
+    return [
+        [min[0], min[1], min[2]],
+        [min[0], min[1], max[2]],
+        [min[0], max[1], min[2]],
+        [min[0], max[1], max[2]],
+        [max[0], min[1], min[2]],
+        [max[0], min[1], max[2]],
+        [max[0], max[1], min[2]],
+        [max[0], max[1], max[2]]
+    ].map((corner) => transformPointMat4(worldMatrix, corner));
 }
 
 async function buildTilesetIndex(tilesetUrl, debug) {
-    const index = new Map();
-    const queue = [tilesetUrl];
+    const index = [];
+    const queue = [{ url: tilesetUrl, parentTransform: IDENTITY_MATRIX_4 }];
     const visited = new Set();
 
     while (queue.length) {
-        const url = queue.shift();
+        const { url, parentTransform } = queue.shift();
         if (visited.has(url)) continue;
         visited.add(url);
 
@@ -583,7 +1123,7 @@ async function buildTilesetIndex(tilesetUrl, debug) {
             }
             const tileset = await response.json();
             const baseUrl = new URL(url, url).href;
-            collectTilesetEntries(tileset?.root, baseUrl, index, queue);
+            collectTilesetEntries(tileset?.root, baseUrl, index, queue, parentTransform);
         } catch (error) {
             if (debug) {
                 console.warn("[b3dm] Failed to load tileset index", {
@@ -596,33 +1136,49 @@ async function buildTilesetIndex(tilesetUrl, debug) {
 
     if (debug) {
         console.info("[b3dm] Tileset index loaded", {
-            entries: index.size
+            entries: index.length
         });
     }
 
     return index;
 }
 
-function collectTilesetEntries(node, baseUrl, index, queue) {
+function collectTilesetEntries(
+    node,
+    baseUrl,
+    index,
+    queue,
+    parentTransform = IDENTITY_MATRIX_4
+) {
     if (!node) return;
 
+    const nodeTransform = isMatrix4(node.transform) ? node.transform : IDENTITY_MATRIX_4;
+    const accumulatedTransform = multiplyMat4(parentTransform, nodeTransform);
     const contentUri = node.content?.uri || node.content?.url;
     const contentBounding = node.content?.boundingVolume?.region || node.boundingVolume?.region;
 
     if (contentUri) {
         const resolved = new URL(contentUri, baseUrl).href;
         if (contentUri.endsWith(".json")) {
-            queue.push(resolved);
+            queue.push({ url: resolved, parentTransform: accumulatedTransform });
         } else if (contentUri.endsWith(".b3dm") && contentBounding) {
             const fileName = resolved.split("/").pop();
             if (fileName) {
-                index.set(fileName, { region: contentBounding, url: resolved });
+                index.push({
+                    tile: fileName,
+                    region: contentBounding,
+                    url: resolved,
+                    transform: accumulatedTransform,
+                    center: getRegionCenter(contentBounding)
+                });
             }
         }
     }
 
     if (Array.isArray(node.children)) {
-        node.children.forEach((child) => collectTilesetEntries(child, baseUrl, index, queue));
+        node.children.forEach((child) =>
+            collectTilesetEntries(child, baseUrl, index, queue, accumulatedTransform)
+        );
     }
 }
 
@@ -663,6 +1219,63 @@ export function latLonHeightToEnu(lat, lon, height, origin) {
     return [east, north, up];
 }
 
+export function latLonHeightToEcef(lat, lon, height = 0) {
+    return toEcef(lat, lon, height);
+}
+
+export function enuDirectionToEcef(direction, lat, lon) {
+    if (!Array.isArray(direction) || direction.length < 3) return null;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+
+    const latRad = lat * (Math.PI / 180);
+    const lonRad = lon * (Math.PI / 180);
+    const sinLat = Math.sin(latRad);
+    const cosLat = Math.cos(latRad);
+    const sinLon = Math.sin(lonRad);
+    const cosLon = Math.cos(lonRad);
+
+    const eastAxis = [-sinLon, cosLon, 0];
+    const northAxis = [-sinLat * cosLon, -sinLat * sinLon, cosLat];
+    const upAxis = [cosLat * cosLon, cosLat * sinLon, sinLat];
+
+    return normalizeVec3([
+        direction[0] * eastAxis[0] + direction[1] * northAxis[0] + direction[2] * upAxis[0],
+        direction[0] * eastAxis[1] + direction[1] * northAxis[1] + direction[2] * upAxis[1],
+        direction[0] * eastAxis[2] + direction[1] * northAxis[2] + direction[2] * upAxis[2]
+    ]);
+}
+
+function ecefToLatLonHeight(point) {
+    if (!Array.isArray(point) || point.length < 3 || point.some((value) => !Number.isFinite(value))) {
+        return null;
+    }
+
+    const [x, y, z] = point;
+    const a = 6378137.0;
+    const f = 1 / 298.257223563;
+    const e2 = f * (2 - f);
+    const b = a * Math.sqrt(1 - e2);
+    const ep2 = (a * a - b * b) / (b * b);
+    const p = Math.sqrt(x * x + y * y);
+    const theta = Math.atan2(a * z, b * p);
+    const sinTheta = Math.sin(theta);
+    const cosTheta = Math.cos(theta);
+    const lon = Math.atan2(y, x);
+    const lat = Math.atan2(
+        z + ep2 * b * sinTheta * sinTheta * sinTheta,
+        p - e2 * a * cosTheta * cosTheta * cosTheta
+    );
+    const sinLat = Math.sin(lat);
+    const N = a / Math.sqrt(1 - e2 * sinLat * sinLat);
+    const height = p / Math.cos(lat) - N;
+
+    return {
+        lat: lat * (180 / Math.PI),
+        lon: lon * (180 / Math.PI),
+        height
+    };
+}
+
 function toEcef(lat, lon, height) {
     const a = 6378137.0;
     const f = 1 / 298.257223563;
@@ -683,6 +1296,16 @@ function toEcef(lat, lon, height) {
     const z = (N * (1 - e2) + height) * sinLat;
 
     return [x, y, z];
+}
+
+function projectLatLonToLocalPoint(point, referenceCenter) {
+    const avgLatRad = referenceCenter.lat * (Math.PI / 180);
+    return {
+        lat: point.lat,
+        lon: point.lon,
+        x: (point.lon - referenceCenter.lon) * 111320 * Math.cos(avgLatRad),
+        y: (point.lat - referenceCenter.lat) * 111320
+    };
 }
 
 function pickNearbyTiles(lat, lon, bounds, neighborRadius, maxTiles) {
@@ -714,6 +1337,29 @@ function pickNearbyTiles(lat, lon, bounds, neighborRadius, maxTiles) {
     return { tiles, targetKey: `${xIndex}-${yIndex}` };
 }
 
+function pickNearbyLocalTiles(lat, lon, maxTiles) {
+    return LOCAL_B3DM_TILE_METADATA
+        .map((entry) => ({
+            ...entry,
+            distanceMeters: distanceMetersBetweenLatLon(lat, lon, entry.lat, entry.lon)
+        }))
+        .sort((a, b) => a.distanceMeters - b.distanceMeters)
+        .slice(0, maxTiles);
+}
+
+function pickNearbyTilesetEntries(lat, lon, tilesetIndex, options = {}) {
+    const maxTiles = Number.isFinite(options.maxTiles) ? options.maxTiles : 9;
+    const entries = Array.isArray(tilesetIndex) ? tilesetIndex : [];
+
+    return entries
+        .map((entry) => ({
+            ...entry,
+            distanceMeters: distanceMetersToRegion(lat, lon, entry.region)
+        }))
+        .sort((a, b) => a.distanceMeters - b.distanceMeters)
+        .slice(0, maxTiles);
+}
+
 function buildTileIndex(tiles) {
     const entries = tiles
         .map((tile) => {
@@ -738,6 +1384,33 @@ function buildTileIndex(tiles) {
     return { tiles: map, minX, maxX, minY, maxY };
 }
 
+function isLocalTilePath(path) {
+    return typeof path === "string" && !/^https?:\/\//i.test(path);
+}
+
+function distanceMetersBetweenLatLon(latA, lonA, latB, lonB) {
+    const avgLatRad = ((latA + latB) / 2) * (Math.PI / 180);
+    const dx = (lonB - lonA) * 111320 * Math.cos(avgLatRad);
+    const dy = (latB - latA) * 111320;
+    return Math.hypot(dx, dy);
+}
+
+function distanceMetersToRegion(lat, lon, region) {
+    if (!Array.isArray(region) || region.length < 4) {
+        return Number.POSITIVE_INFINITY;
+    }
+
+    const west = region[0] * (180 / Math.PI);
+    const south = region[1] * (180 / Math.PI);
+    const east = region[2] * (180 / Math.PI);
+    const north = region[3] * (180 / Math.PI);
+
+    const clampedLat = clamp(lat, south, north);
+    const clampedLon = clamp(lon, west, east);
+
+    return distanceMetersBetweenLatLon(lat, lon, clampedLat, clampedLon);
+}
+
 function parseB3dmHeader(buffer) {
     if (!(buffer instanceof ArrayBuffer) || buffer.byteLength < 28) {
         return { magic: null, version: null, byteLength: null };
@@ -754,6 +1427,175 @@ function parseB3dmHeader(buffer) {
     const byteLength = view.getUint32(8, true);
 
     return { magic, version, byteLength };
+}
+
+function getRtcCenter(featureTable, gltf) {
+    const featureRtc = featureTable?.RTC_CENTER;
+    if (Array.isArray(featureRtc) && featureRtc.length >= 3 && featureRtc.every(Number.isFinite)) {
+        return featureRtc.slice(0, 3);
+    }
+
+    const gltfRtc = gltf?.json?.extensions?.CESIUM_RTC?.center;
+    if (Array.isArray(gltfRtc) && gltfRtc.length >= 3 && gltfRtc.every(Number.isFinite)) {
+        return gltfRtc.slice(0, 3);
+    }
+
+    return null;
+}
+
+function buildModelMatrix(rtcCenter, tilesetTransform) {
+    const translationMatrix = Array.isArray(rtcCenter)
+        ? makeTranslationMatrix(rtcCenter[0], rtcCenter[1], rtcCenter[2])
+        : IDENTITY_MATRIX_4;
+
+    if (isMatrix4(tilesetTransform)) {
+        return multiplyMat4(tilesetTransform, translationMatrix);
+    }
+
+    return translationMatrix;
+}
+
+function getSceneRootNodes(json) {
+    const sceneIndex = Number.isInteger(json?.scene) ? json.scene : 0;
+    const sceneNodes = json?.scenes?.[sceneIndex]?.nodes;
+
+    if (Array.isArray(sceneNodes) && sceneNodes.length > 0) {
+        return sceneNodes;
+    }
+
+    return Array.isArray(json?.nodes) ? json.nodes.map((_node, index) => index) : [];
+}
+
+function getNodeLocalMatrix(node) {
+    if (isMatrix4(node?.matrix)) {
+        return node.matrix;
+    }
+
+    const translation = Array.isArray(node?.translation) ? node.translation : [0, 0, 0];
+    const rotation = Array.isArray(node?.rotation) ? node.rotation : [0, 0, 0, 1];
+    const scale = Array.isArray(node?.scale) ? node.scale : [1, 1, 1];
+
+    return composeTrsMatrix(translation, rotation, scale);
+}
+
+function composeTrsMatrix(translation, rotation, scale) {
+    const [x, y, z, w] = rotation;
+    const [sx, sy, sz] = scale;
+
+    const x2 = x + x;
+    const y2 = y + y;
+    const z2 = z + z;
+    const xx = x * x2;
+    const xy = x * y2;
+    const xz = x * z2;
+    const yy = y * y2;
+    const yz = y * z2;
+    const zz = z * z2;
+    const wx = w * x2;
+    const wy = w * y2;
+    const wz = w * z2;
+
+    return [
+        (1 - (yy + zz)) * sx,
+        (xy + wz) * sx,
+        (xz - wy) * sx,
+        0,
+        (xy - wz) * sy,
+        (1 - (xx + zz)) * sy,
+        (yz + wx) * sy,
+        0,
+        (xz + wy) * sz,
+        (yz - wx) * sz,
+        (1 - (xx + yy)) * sz,
+        0,
+        translation[0],
+        translation[1],
+        translation[2],
+        1
+    ];
+}
+
+function buildConvexHull2d(points) {
+    if (!Array.isArray(points) || points.length < 3) {
+        return Array.isArray(points) ? points.slice() : [];
+    }
+
+    const sortedPoints = [...points].sort((a, b) => {
+        if (a.x !== b.x) return a.x - b.x;
+        if (a.y !== b.y) return a.y - b.y;
+        if (a.lat !== b.lat) return a.lat - b.lat;
+        return a.lon - b.lon;
+    });
+
+    const lower = [];
+    for (const point of sortedPoints) {
+        while (lower.length >= 2 && cross2d(lower[lower.length - 2], lower[lower.length - 1], point) <= 0) {
+            lower.pop();
+        }
+        lower.push(point);
+    }
+
+    const upper = [];
+    for (let index = sortedPoints.length - 1; index >= 0; index -= 1) {
+        const point = sortedPoints[index];
+        while (upper.length >= 2 && cross2d(upper[upper.length - 2], upper[upper.length - 1], point) <= 0) {
+            upper.pop();
+        }
+        upper.push(point);
+    }
+
+    lower.pop();
+    upper.pop();
+    return lower.concat(upper);
+}
+
+function multiplyMat4(a, b) {
+    const result = new Array(16).fill(0);
+
+    for (let column = 0; column < 4; column += 1) {
+        for (let row = 0; row < 4; row += 1) {
+            let sum = 0;
+
+            for (let i = 0; i < 4; i += 1) {
+                sum += a[i * 4 + row] * b[column * 4 + i];
+            }
+
+            result[column * 4 + row] = sum;
+        }
+    }
+
+    return result;
+}
+
+function cross2d(origin, pointA, pointB) {
+    return (pointA.x - origin.x) * (pointB.y - origin.y) - (pointA.y - origin.y) * (pointB.x - origin.x);
+}
+
+function transformPointMat4(matrix, point) {
+    const [x, y, z] = point;
+
+    return [
+        matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12],
+        matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13],
+        matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14]
+    ];
+}
+
+function makeTranslationMatrix(x, y, z) {
+    return [
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        x, y, z, 1
+    ];
+}
+
+function isMatrix4(value) {
+    return Array.isArray(value) && value.length === 16 && value.every(Number.isFinite);
+}
+
+function isIdentityMatrix4(matrix) {
+    return matrix.every((value, index) => value === IDENTITY_MATRIX_4[index]);
 }
 
 function clamp(value, min, max) {
