@@ -464,28 +464,54 @@ function renderBuildingTileFootprints(buildingData) {
     if (!Array.isArray(buildingData) || buildingData.length === 0) return;
 
     const footprintLayers = buildingData.flatMap((tile, index) => {
-        const footprintPolygon = tile?.footprint?.polygonLatLon;
-        if (!Array.isArray(footprintPolygon) || footprintPolygon.length < 3) {
-            return [];
+        const color = getTileDebugColor(index);
+        const buildingFootprints = Array.isArray(tile?.buildingFootprints) ? tile.buildingFootprints : [];
+        const layers = [];
+
+        if (buildingFootprints.length > 0) {
+            buildingFootprints.forEach((buildingFootprint, buildingIndex) => {
+                const polygonLatLon = buildingFootprint?.polygonLatLon;
+                if (!Array.isArray(polygonLatLon) || polygonLatLon.length < 3) return;
+
+                const polygon = L.polygon(polygonLatLon, {
+                    color,
+                    weight: 1.25,
+                    opacity: 0.85,
+                    fillColor: color,
+                    fillOpacity: 0.16
+                });
+
+                polygon.bindTooltip(`${tile.tile} #${buildingIndex + 1}`, {
+                    sticky: true,
+                    direction: "top"
+                });
+
+                polygon.bindPopup(buildTileFootprintPopupHtml(tile, buildingFootprint, buildingIndex));
+                layers.push(polygon);
+            });
+        } else {
+            const footprintPolygon = tile?.footprint?.polygonLatLon;
+            if (!Array.isArray(footprintPolygon) || footprintPolygon.length < 3) {
+                return [];
+            }
+
+            const polygon = L.polygon(footprintPolygon, {
+                color,
+                weight: 2,
+                opacity: 0.95,
+                fillColor: color,
+                fillOpacity: 0.12
+            });
+
+            polygon.bindTooltip(tile.tile, {
+                sticky: true,
+                direction: "top"
+            });
+
+            polygon.bindPopup(buildTileFootprintPopupHtml(tile));
+            layers.push(polygon);
         }
 
-        const color = getTileDebugColor(index);
-        const polygon = L.polygon(footprintPolygon, {
-            color,
-            weight: 2,
-            opacity: 0.95,
-            fillColor: color,
-            fillOpacity: 0.12
-        });
-
-        polygon.bindTooltip(tile.tile, {
-            sticky: true,
-            direction: "top"
-        });
-
-        polygon.bindPopup(buildTileFootprintPopupHtml(tile));
-
-        const layers = [polygon];
         if (tile.tilesetCenter && Number.isFinite(tile.tilesetCenter.lat) && Number.isFinite(tile.tilesetCenter.lon)) {
             const centerMarker = L.circleMarker([tile.tilesetCenter.lat, tile.tilesetCenter.lon], {
                 radius: 4,
@@ -951,17 +977,23 @@ function getTileDebugColor(index) {
     return palette[index % palette.length];
 }
 
-function buildTileFootprintPopupHtml(tile) {
+function buildTileFootprintPopupHtml(tile, buildingFootprint = null, buildingIndex = null) {
     const footprint = tile?.footprint ?? null;
     const rayCheck = tile?.rayCheck ?? null;
     const tileCenter = tile?.tilesetCenter ?? null;
+    const totalBuildings = Array.isArray(tile?.buildingFootprints) ? tile.buildingFootprints.length : 0;
+    const activeFootprint = buildingFootprint ?? footprint;
 
     return `
         <strong>${escapeHtml(tile?.tile ?? "Tile")}</strong><br/>
         Distance: ${formatMeters(tile?.selectionDistanceMeters)}<br/>
-        Footprint hull points: ${footprint?.hullPointCount ?? 0}<br/>
-        Footprint sampled points: ${footprint?.sampledPointCount ?? footprint?.sourcePointCount ?? 0}<br/>
-        Footprint total vertices: ${footprint?.totalVertexCount ?? 0}${footprint?.isSampled ? " (sampled)" : ""}<br/>
+        Buildings extracted: ${totalBuildings}<br/>
+        ${Number.isInteger(buildingIndex) ? `Building index: ${buildingIndex + 1}<br/>` : ""}
+        Footprint hull points: ${activeFootprint?.hullPointCount ?? 0}<br/>
+        Footprint sampled points: ${activeFootprint?.sampledPointCount ?? activeFootprint?.sourcePointCount ?? 0}<br/>
+        Footprint total vertices: ${activeFootprint?.totalVertexCount ?? 0}${activeFootprint?.isSampled ? " (sampled)" : ""}<br/>
+        Footprint area: ${Number.isFinite(activeFootprint?.areaSquareMeters) ? `${activeFootprint.areaSquareMeters.toFixed(1)} m²` : "n/a"}<br/>
+        Content up-axis: ${escapeHtml(tile?.contentUpAxis ?? "Y")}<br/>
         Tile center: ${formatLatLon(tileCenter?.lat, tileCenter?.lon)}<br/>
         Ray result: ${escapeHtml(rayCheck?.reason ?? "n/a")}<br/>
         Triangles tested: ${rayCheck?.trianglesTested ?? 0}

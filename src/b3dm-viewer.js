@@ -101,6 +101,7 @@ const IDENTITY_MATRIX_4 = Object.freeze([
     0, 0, 0, 1
 ]);
 const DEFAULT_FOOTPRINT_MAX_POINTS = 12000;
+const DEFAULT_BUILDING_FOOTPRINT_MAX_POINTS = 1200;
 const ACCESSOR_CACHE = new WeakMap();
 
 export async function loadNearbyBuildingData(lat, lon, options = {}) {
@@ -114,7 +115,8 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
         rayOptions = {},
         includeFootprints = true,
         useTileset = true,
-        tilesetUrl = DEFAULT_TILESET_URL
+        tilesetUrl = DEFAULT_TILESET_URL,
+        contentUpAxis = "Z"
     } = options;
 
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
@@ -180,13 +182,22 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
                 const footprint = gltf && includeFootprints && tilesetCenter
                     ? computeGltfFootprint(gltf, {
                           modelMatrix,
-                          referenceCenter: tilesetCenter
+                          referenceCenter: tilesetCenter,
+                          contentUpAxis
                       })
                     : null;
+                const buildingFootprints = gltf && includeFootprints && tilesetCenter
+                    ? computeGltfBuildingFootprints(gltf, {
+                          modelMatrix,
+                          referenceCenter: tilesetCenter,
+                          contentUpAxis
+                      })
+                    : [];
                 const rayCheck = gltf && ray
                     ? rayIntersectsGltf(gltf, ray, {
                           ...rayOptions,
-                          modelMatrix
+                          modelMatrix,
+                          contentUpAxis
                       })
                     : null;
 
@@ -212,6 +223,9 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
                                   sourcePointCount: footprint.sourcePointCount
                               }
                             : null,
+                        buildingFootprints: Array.isArray(buildingFootprints)
+                            ? buildingFootprints.length
+                            : 0,
                         tileset: tilesetCenter
                             ? {
                                   centerLat: tilesetCenter.lat,
@@ -251,7 +265,9 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
                     rtcCenter,
                     modelMatrix,
                     selectionDistanceMeters,
-                    footprint
+                    footprint,
+                    buildingFootprints,
+                    contentUpAxis
                 };
             } catch (error) {
                 if (debug) {
@@ -484,6 +500,7 @@ export function rayIntersectsGltf(gltf, ray, options = {}) {
     const json = gltf.json;
     const sceneRootNodes = getSceneRootNodes(json);
     const modelMatrix = isMatrix4(options.modelMatrix) ? options.modelMatrix : IDENTITY_MATRIX_4;
+    const contentUpAxis = getContentUpAxis(options.contentUpAxis);
     let trianglesTested = 0;
 
     for (const nodeIndex of sceneRootNodes) {
@@ -494,7 +511,8 @@ export function rayIntersectsGltf(gltf, ray, options = {}) {
             origin,
             direction,
             maxTriangles,
-            trianglesTested
+            trianglesTested,
+            contentUpAxis
         );
 
         trianglesTested = hit.trianglesTested;
@@ -541,6 +559,7 @@ export function computeGltfFootprint(gltf, options = {}) {
     const json = gltf.json;
     const sceneRootNodes = getSceneRootNodes(json);
     const modelMatrix = isMatrix4(options.modelMatrix) ? options.modelMatrix : IDENTITY_MATRIX_4;
+    const contentUpAxis = getContentUpAxis(options.contentUpAxis);
     const maxPointCount =
         Number.isFinite(options.maxPointCount) && options.maxPointCount > 0
             ? Math.floor(options.maxPointCount)
@@ -578,7 +597,8 @@ export function computeGltfFootprint(gltf, options = {}) {
             referenceCenter,
             footprintPoints,
             footprintStats,
-            footprintSources.length - sourceIndex
+            footprintSources.length - sourceIndex,
+            contentUpAxis
         );
     }
 
@@ -602,6 +622,115 @@ export function computeGltfFootprint(gltf, options = {}) {
     };
 }
 
+export function computeGltfBuildingFootprints(gltf, options = {}) {
+    const validation = validateGltfPayload(gltf);
+    if (!validation.isValid) {
+        return [];
+    }
+
+    const referenceCenter = options.referenceCenter;
+    if (
+        !referenceCenter ||
+        !Number.isFinite(referenceCenter.lat) ||
+        !Number.isFinite(referenceCenter.lon)
+    ) {
+        return [];
+    }
+
+    const modelMatrix = isMatrix4(options.modelMatrix) ? options.modelMatrix : IDENTITY_MATRIX_4;
+    const contentUpAxis = getContentUpAxis(options.contentUpAxis);
+    const maxPointsPerBuilding =
+        Number.isFinite(options.maxPointsPerBuilding) && options.maxPointsPerBuilding > 0
+            ? Math.floor(options.maxPointsPerBuilding)
+            : DEFAULT_BUILDING_FOOTPRINT_MAX_POINTS;
+    const minAreaSquareMeters =
+        Number.isFinite(options.minAreaSquareMeters) && options.minAreaSquareMeters >= 0
+            ? options.minAreaSquareMeters
+            : 4;
+    const buildingSources = [];
+    const sceneRootNodes = getSceneRootNodes(gltf.json);
+
+    for (const nodeIndex of sceneRootNodes) {
+        collectBuildingFootprintSourcesForNode(
+            gltf,
+            nodeIndex,
+            modelMatrix,
+            buildingSources
+        );
+    }
+
+    if (buildingSources.length === 0) {
+        return [];
+    }
+
+    return buildingSources
+        .map((sourceGroup) =>
+            computeFootprintFromSources(
+                gltf,
+                sourceGroup.sources,
+                referenceCenter,
+                maxPointsPerBuilding,
+                contentUpAxis
+            )
+        )
+        .filter((footprint) => {
+            if (!footprint || !Array.isArray(footprint.polygonLatLon)) return false;
+            return (footprint.areaSquareMeters ?? 0) >= minAreaSquareMeters;
+        });
+}
+
+export function buildingTilesToGeoJson(buildingData = []) {
+    const features = [];
+
+    for (const tile of buildingData) {
+        const tileName = tile?.tile ?? "unknown-tile";
+        const footprints = Array.isArray(tile?.buildingFootprints) ? tile.buildingFootprints : [];
+
+        footprints.forEach((footprint, index) => {
+            const ring = Array.isArray(footprint?.polygonLatLon)
+                ? footprint.polygonLatLon
+                      .filter(
+                          (point) =>
+                              Array.isArray(point) &&
+                              point.length >= 2 &&
+                              Number.isFinite(point[0]) &&
+                              Number.isFinite(point[1])
+                      )
+                      .map(([lat, lon]) => [lon, lat])
+                : [];
+
+            if (ring.length < 3) return;
+            const closedRing = [...ring];
+            const [firstLon, firstLat] = ring[0];
+            const [lastLon, lastLat] = ring[ring.length - 1];
+            if (firstLon !== lastLon || firstLat !== lastLat) {
+                closedRing.push([firstLon, firstLat]);
+            }
+
+            features.push({
+                type: "Feature",
+                properties: {
+                    tile: tileName,
+                    buildingIndex: index,
+                    areaSquareMeters: footprint?.areaSquareMeters ?? null,
+                    hullPointCount: footprint?.hullPointCount ?? 0,
+                    sampledPointCount: footprint?.sampledPointCount ?? 0,
+                    totalVertexCount: footprint?.totalVertexCount ?? 0
+                },
+                geometry: {
+                    type: "Polygon",
+                    coordinates: [closedRing]
+                }
+            });
+        });
+    }
+
+    return {
+        type: "FeatureCollection",
+        features
+    };
+}
+
 function collectFootprintSourcesForNode(gltf, nodeIndex, parentMatrix, footprintSources) {
     const node = gltf?.json?.nodes?.[nodeIndex];
     if (!node) return;
@@ -617,6 +746,184 @@ function collectFootprintSourcesForNode(gltf, nodeIndex, parentMatrix, footprint
     for (const childIndex of node.children ?? []) {
         collectFootprintSourcesForNode(gltf, childIndex, worldMatrix, footprintSources);
     }
+}
+
+function collectBuildingFootprintSourcesForNode(gltf, nodeIndex, parentMatrix, groups) {
+    const node = gltf?.json?.nodes?.[nodeIndex];
+    if (!node) return;
+
+    const localMatrix = getNodeLocalMatrix(node);
+    const worldMatrix = multiplyMat4(parentMatrix, localMatrix);
+
+    if (Number.isInteger(node.mesh)) {
+        const mesh = gltf.json.meshes?.[node.mesh];
+        collectBuildingFootprintGroupsForMesh(gltf, mesh, worldMatrix, groups, nodeIndex, node.mesh);
+    }
+
+    for (const childIndex of node.children ?? []) {
+        collectBuildingFootprintSourcesForNode(gltf, childIndex, worldMatrix, groups);
+    }
+}
+
+function collectBuildingFootprintGroupsForMesh(
+    gltf,
+    mesh,
+    worldMatrix,
+    groups,
+    nodeIndex,
+    meshIndex
+) {
+    for (const primitive of mesh?.primitives ?? []) {
+        const positionAccessorIndex = primitive.attributes?.POSITION;
+        if (positionAccessorIndex === undefined) continue;
+
+        const positions = getAccessorData(gltf, positionAccessorIndex);
+        const accessor = gltf?.json?.accessors?.[positionAccessorIndex];
+        const vertexCount = Number.isFinite(accessor?.count)
+            ? accessor.count
+            : Math.floor((positions?.length ?? 0) / 3);
+
+        if (!positions || vertexCount < 3) {
+            groups.push({
+                nodeIndex,
+                meshIndex,
+                sources: [
+                    {
+                        accessorIndex: positionAccessorIndex,
+                        worldMatrix,
+                        vertexCount: Number.isFinite(accessor?.count) ? accessor.count : 8
+                    }
+                ]
+            });
+            continue;
+        }
+
+        const rawIndices =
+            primitive.indices !== undefined ? getAccessorData(gltf, primitive.indices) : null;
+        const batchAccessorIndex = getBatchIdAccessorIndex(primitive);
+        const batchIds = Number.isInteger(batchAccessorIndex)
+            ? getAccessorData(gltf, batchAccessorIndex)
+            : null;
+        const batchGroups = splitPrimitiveVerticesByBatchId(batchIds, rawIndices, vertexCount);
+
+        if (batchGroups && batchGroups.length > 0) {
+            batchGroups.forEach((componentVertexIndices) => {
+                if (!Array.isArray(componentVertexIndices) || componentVertexIndices.length < 3) return;
+                groups.push({
+                    nodeIndex,
+                    meshIndex,
+                    sources: [
+                        {
+                            accessorIndex: positionAccessorIndex,
+                            worldMatrix,
+                            vertexCount: componentVertexIndices.length,
+                            vertexIndices: componentVertexIndices
+                        }
+                    ]
+                });
+            });
+            continue;
+        }
+
+        const components = rawIndices
+            ? splitIndexedPrimitiveIntoConnectedComponents(rawIndices, vertexCount)
+            : null;
+
+        if (!components || components.length <= 1) {
+            groups.push({
+                nodeIndex,
+                meshIndex,
+                sources: [
+                    {
+                        accessorIndex: positionAccessorIndex,
+                        worldMatrix,
+                        vertexCount
+                    }
+                ]
+            });
+            continue;
+        }
+
+        components.forEach((componentVertexIndices) => {
+            if (!Array.isArray(componentVertexIndices) || componentVertexIndices.length < 3) return;
+            groups.push({
+                nodeIndex,
+                meshIndex,
+                sources: [
+                    {
+                        accessorIndex: positionAccessorIndex,
+                        worldMatrix,
+                        vertexCount: componentVertexIndices.length,
+                        vertexIndices: componentVertexIndices
+                    }
+                ]
+            });
+        });
+    }
+}
+
+function getBatchIdAccessorIndex(primitive) {
+    const attributes = primitive?.attributes ?? {};
+    const candidates = ["_BATCHID", "BATCHID", "BATCH_ID", "batchId"];
+    for (const candidate of candidates) {
+        if (Number.isInteger(attributes[candidate])) {
+            return attributes[candidate];
+        }
+    }
+    return null;
+}
+
+function splitPrimitiveVerticesByBatchId(batchIds, indices, vertexCount) {
+    if (!batchIds || batchIds.length < vertexCount || vertexCount < 3) {
+        return null;
+    }
+
+    const groupMap = new Map();
+    const addToGroup = (batchId, vertexIndex) => {
+        if (!Number.isFinite(batchId)) return;
+        if (!groupMap.has(batchId)) {
+            groupMap.set(batchId, new Set());
+        }
+        groupMap.get(batchId).add(vertexIndex);
+    };
+
+    if (indices) {
+        const triangleCount = Math.floor(indices.length / 3);
+        for (let triangleIndex = 0; triangleIndex < triangleCount; triangleIndex += 1) {
+            const base = triangleIndex * 3;
+            const a = indices[base];
+            const b = indices[base + 1];
+            const c = indices[base + 2];
+            if (!isValidVertexIndex(a, vertexCount) || !isValidVertexIndex(b, vertexCount) || !isValidVertexIndex(c, vertexCount)) {
+                continue;
+            }
+
+            const batchA = Number(batchIds[a]);
+            const batchB = Number(batchIds[b]);
+            const batchC = Number(batchIds[c]);
+            if (batchA === batchB && batchB === batchC) {
+                addToGroup(batchA, a);
+                addToGroup(batchA, b);
+                addToGroup(batchA, c);
+            } else {
+                addToGroup(batchA, a);
+                addToGroup(batchB, b);
+                addToGroup(batchC, c);
+            }
+        }
+    } else {
+        for (let vertexIndex = 0; vertexIndex < vertexCount; vertexIndex += 1) {
+            addToGroup(Number(batchIds[vertexIndex]), vertexIndex);
+        }
+    }
+
+    if (groupMap.size === 0) {
+        return null;
+    }
+
+    return [...groupMap.values()]
+        .map((vertexSet) => [...vertexSet])
+        .filter((vertexIndices) => vertexIndices.length >= 3);
 }
 
 function collectFootprintSourcesForMesh(gltf, mesh, worldMatrix, footprintSources) {
@@ -639,7 +946,8 @@ function appendFootprintSourcePoints(
     referenceCenter,
     footprintPoints,
     footprintStats,
-    remainingSourceCount
+    remainingSourceCount,
+    contentUpAxis
 ) {
     const remainingBudget = Math.max(0, footprintStats.maxPointCount - footprintStats.sampledPointCount);
     if (remainingBudget === 0) {
@@ -654,23 +962,58 @@ function appendFootprintSourcePoints(
     if (positions) {
         const vertexCount = Math.floor(positions.length / 3);
         const useTransform = !isIdentityMatrix4(source.worldMatrix);
-        const stride = Math.max(1, Math.ceil(vertexCount / sourceBudget));
+        const sourceVertexIndices = Array.isArray(source.vertexIndices)
+            ? source.vertexIndices.filter(
+                  (vertexIndex) => Number.isInteger(vertexIndex) && vertexIndex >= 0 && vertexIndex < vertexCount
+              )
+            : null;
+        const candidateCount = sourceVertexIndices ? sourceVertexIndices.length : vertexCount;
+        const stride = Math.max(1, Math.ceil(candidateCount / sourceBudget));
 
         if (stride > 1) {
             footprintStats.isSampled = true;
         }
 
-        for (
-            let vertexIndex = 0;
-            vertexIndex < vertexCount && footprintStats.sampledPointCount < footprintStats.maxPointCount;
-            vertexIndex += stride
-        ) {
-            const worldPoint = readVec3(positions, vertexIndex * 3, source.worldMatrix, useTransform);
-            const latLonHeight = ecefToLatLonHeight(worldPoint);
-            if (!latLonHeight) continue;
+        if (sourceVertexIndices) {
+            for (
+                let vertexOffset = 0;
+                vertexOffset < sourceVertexIndices.length &&
+                footprintStats.sampledPointCount < footprintStats.maxPointCount;
+                vertexOffset += stride
+            ) {
+                const vertexIndex = sourceVertexIndices[vertexOffset];
+                const worldPoint = readVec3(
+                    positions,
+                    vertexIndex * 3,
+                    source.worldMatrix,
+                    useTransform,
+                    contentUpAxis
+                );
+                const latLonHeight = ecefToLatLonHeight(worldPoint);
+                if (!latLonHeight) continue;
 
-            footprintPoints.push(projectLatLonToLocalPoint(latLonHeight, referenceCenter));
-            footprintStats.sampledPointCount += 1;
+                footprintPoints.push(projectLatLonToLocalPoint(latLonHeight, referenceCenter));
+                footprintStats.sampledPointCount += 1;
+            }
+        } else {
+            for (
+                let vertexIndex = 0;
+                vertexIndex < vertexCount && footprintStats.sampledPointCount < footprintStats.maxPointCount;
+                vertexIndex += stride
+            ) {
+                const worldPoint = readVec3(
+                    positions,
+                    vertexIndex * 3,
+                    source.worldMatrix,
+                    useTransform,
+                    contentUpAxis
+                );
+                const latLonHeight = ecefToLatLonHeight(worldPoint);
+                if (!latLonHeight) continue;
+
+                footprintPoints.push(projectLatLonToLocalPoint(latLonHeight, referenceCenter));
+                footprintStats.sampledPointCount += 1;
+            }
         }
 
         return;
@@ -699,7 +1042,136 @@ function appendFootprintSourcePoints(
     }
 }
 
-function testRayAgainstNode(gltf, nodeIndex, parentMatrix, origin, direction, maxTriangles, startCount) {
+function splitIndexedPrimitiveIntoConnectedComponents(indices, vertexCount) {
+    const triangleCount = Math.floor(indices.length / 3);
+    if (triangleCount <= 1 || vertexCount < 3) return null;
+
+    const parent = new Int32Array(vertexCount);
+    const rank = new Uint8Array(vertexCount);
+    for (let i = 0; i < vertexCount; i += 1) {
+        parent[i] = i;
+    }
+
+    for (let triangleIndex = 0; triangleIndex < triangleCount; triangleIndex += 1) {
+        const base = triangleIndex * 3;
+        const a = indices[base];
+        const b = indices[base + 1];
+        const c = indices[base + 2];
+        if (!isValidVertexIndex(a, vertexCount) || !isValidVertexIndex(b, vertexCount) || !isValidVertexIndex(c, vertexCount)) {
+            continue;
+        }
+        unionDisjointSet(parent, rank, a, b);
+        unionDisjointSet(parent, rank, b, c);
+    }
+
+    const componentMap = new Map();
+    for (let triangleIndex = 0; triangleIndex < triangleCount; triangleIndex += 1) {
+        const base = triangleIndex * 3;
+        const tri = [indices[base], indices[base + 1], indices[base + 2]];
+        if (!tri.every((index) => isValidVertexIndex(index, vertexCount))) continue;
+
+        const root = findDisjointSetRoot(parent, tri[0]);
+        if (!componentMap.has(root)) {
+            componentMap.set(root, new Set());
+        }
+        const componentVertices = componentMap.get(root);
+        tri.forEach((vertexIndex) => componentVertices.add(vertexIndex));
+    }
+
+    return [...componentMap.values()].map((vertexSet) => [...vertexSet]);
+}
+
+function findDisjointSetRoot(parent, value) {
+    let node = value;
+    while (parent[node] !== node) {
+        parent[node] = parent[parent[node]];
+        node = parent[node];
+    }
+    return node;
+}
+
+function unionDisjointSet(parent, rank, a, b) {
+    const rootA = findDisjointSetRoot(parent, a);
+    const rootB = findDisjointSetRoot(parent, b);
+    if (rootA === rootB) return;
+
+    if (rank[rootA] < rank[rootB]) {
+        parent[rootA] = rootB;
+    } else if (rank[rootA] > rank[rootB]) {
+        parent[rootB] = rootA;
+    } else {
+        parent[rootB] = rootA;
+        rank[rootA] += 1;
+    }
+}
+
+function isValidVertexIndex(value, vertexCount) {
+    return Number.isInteger(value) && value >= 0 && value < vertexCount;
+}
+
+function computeFootprintFromSources(gltf, sources, referenceCenter, maxPointCount, contentUpAxis = "Y") {
+    const footprintPoints = [];
+    const footprintStats = {
+        sampledPointCount: 0,
+        totalVertexCount: 0,
+        maxPointCount,
+        isSampled: false
+    };
+
+    footprintStats.totalVertexCount = sources.reduce(
+        (sum, source) => sum + (Number.isFinite(source.vertexCount) ? source.vertexCount : 0),
+        0
+    );
+
+    for (
+        let sourceIndex = 0;
+        sourceIndex < sources.length && footprintStats.sampledPointCount < footprintStats.maxPointCount;
+        sourceIndex += 1
+    ) {
+        appendFootprintSourcePoints(
+            gltf,
+            sources[sourceIndex],
+            referenceCenter,
+            footprintPoints,
+            footprintStats,
+            sources.length - sourceIndex,
+            contentUpAxis
+        );
+    }
+
+    if (footprintPoints.length < 3) {
+        return null;
+    }
+
+    const hull = buildConvexHull2d(footprintPoints);
+    if (hull.length < 3) {
+        return null;
+    }
+
+    const polygonLocal = hull.map((point) => ({ x: point.x, y: point.y }));
+    const areaSquareMeters = Math.abs(computePolygonArea2d(polygonLocal));
+
+    return {
+        polygonLatLon: hull.map((point) => [point.lat, point.lon]),
+        hullPointCount: hull.length,
+        sourcePointCount: footprintPoints.length,
+        sampledPointCount: footprintStats.sampledPointCount,
+        totalVertexCount: footprintStats.totalVertexCount,
+        isSampled: footprintStats.isSampled,
+        areaSquareMeters
+    };
+}
+
+function testRayAgainstNode(
+    gltf,
+    nodeIndex,
+    parentMatrix,
+    origin,
+    direction,
+    maxTriangles,
+    startCount,
+    contentUpAxis
+) {
     const node = gltf?.json?.nodes?.[nodeIndex];
     if (!node) {
         return { hit: false, trianglesTested: startCount };
@@ -718,7 +1190,8 @@ function testRayAgainstNode(gltf, nodeIndex, parentMatrix, origin, direction, ma
             origin,
             direction,
             maxTriangles,
-            trianglesTested
+            trianglesTested,
+            contentUpAxis
         );
         trianglesTested = hit.trianglesTested;
 
@@ -735,7 +1208,8 @@ function testRayAgainstNode(gltf, nodeIndex, parentMatrix, origin, direction, ma
             origin,
             direction,
             maxTriangles,
-            trianglesTested
+            trianglesTested,
+            contentUpAxis
         );
         trianglesTested = hit.trianglesTested;
 
@@ -747,7 +1221,16 @@ function testRayAgainstNode(gltf, nodeIndex, parentMatrix, origin, direction, ma
     return { hit: false, trianglesTested };
 }
 
-function testRayAgainstMesh(gltf, mesh, worldMatrix, origin, direction, maxTriangles, startCount) {
+function testRayAgainstMesh(
+    gltf,
+    mesh,
+    worldMatrix,
+    origin,
+    direction,
+    maxTriangles,
+    startCount,
+    contentUpAxis
+) {
     let trianglesTested = startCount;
 
     for (const primitive of mesh?.primitives ?? []) {
@@ -773,7 +1256,8 @@ function testRayAgainstMesh(gltf, mesh, worldMatrix, origin, direction, maxTrian
             indices,
             worldMatrix,
             maxTriangles,
-            trianglesTested
+            trianglesTested,
+            contentUpAxis
         );
 
         trianglesTested = hit.trianglesTested;
@@ -793,7 +1277,8 @@ function testRayAgainstPrimitive(
     indices,
     worldMatrix,
     maxTriangles,
-    startCount
+    startCount,
+    contentUpAxis
 ) {
     let trianglesTested = startCount;
 
@@ -811,9 +1296,9 @@ function testRayAgainstPrimitive(
         const idx1 = indexArray ? indexArray[indexBase + 1] : indexBase + 1;
         const idx2 = indexArray ? indexArray[indexBase + 2] : indexBase + 2;
 
-        const v0 = readVec3(positions, idx0 * positionStride, worldMatrix, useTransform);
-        const v1 = readVec3(positions, idx1 * positionStride, worldMatrix, useTransform);
-        const v2 = readVec3(positions, idx2 * positionStride, worldMatrix, useTransform);
+        const v0 = readVec3(positions, idx0 * positionStride, worldMatrix, useTransform, contentUpAxis);
+        const v1 = readVec3(positions, idx1 * positionStride, worldMatrix, useTransform, contentUpAxis);
+        const v2 = readVec3(positions, idx2 * positionStride, worldMatrix, useTransform, contentUpAxis);
 
         trianglesTested += 1;
 
@@ -1035,9 +1520,32 @@ function dotVec3(a, b) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
-function readVec3(buffer, index, matrix = IDENTITY_MATRIX_4, applyTransform = false) {
-    const point = [buffer[index], buffer[index + 1], buffer[index + 2]];
+function readVec3(
+    buffer,
+    index,
+    matrix = IDENTITY_MATRIX_4,
+    applyTransform = false,
+    contentUpAxis = "Y"
+) {
+    const point = reorientPointByUpAxis(
+        [buffer[index], buffer[index + 1], buffer[index + 2]],
+        contentUpAxis
+    );
     return applyTransform ? transformPointMat4(matrix, point) : point;
+}
+
+function getContentUpAxis(value) {
+    const normalized = typeof value === "string" ? value.trim().toUpperCase() : "Y";
+    return normalized === "Z" ? "Z" : "Y";
+}
+
+function reorientPointByUpAxis(point, contentUpAxis) {
+    if (contentUpAxis === "Z") {
+        const [x, y, z] = point;
+        // Rotate +90deg around X: glTF Y-up -> tile Z-up.
+        return [x, z, -y];
+    }
+    return point;
 }
 
 function getTransformedAccessorBounds(accessor, worldMatrix) {
@@ -1569,6 +2077,15 @@ function multiplyMat4(a, b) {
 
 function cross2d(origin, pointA, pointB) {
     return (pointA.x - origin.x) * (pointB.y - origin.y) - (pointA.y - origin.y) * (pointB.x - origin.x);
+}
+
+function computePolygonArea2d(points) {
+    if (!Array.isArray(points) || points.length < 3) return 0;
+    let area = 0;
+    for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+        area += points[j].x * points[i].y - points[i].x * points[j].y;
+    }
+    return area / 2;
 }
 
 function transformPointMat4(matrix, point) {
