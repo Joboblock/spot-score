@@ -102,6 +102,7 @@ const IDENTITY_MATRIX_4 = Object.freeze([
 ]);
 const DEFAULT_FOOTPRINT_MAX_POINTS = 12000;
 const DEFAULT_BUILDING_FOOTPRINT_MAX_POINTS = 1200;
+const GLTF_MATRIX_APPLY_MODE = "transposed-3x3";
 const ACCESSOR_CACHE = new WeakMap();
 
 export async function loadNearbyBuildingData(lat, lon, options = {}) {
@@ -115,8 +116,7 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
         rayOptions = {},
         includeFootprints = true,
         useTileset = true,
-        tilesetUrl = DEFAULT_TILESET_URL,
-        contentUpAxis = "Z"
+        tilesetUrl = DEFAULT_TILESET_URL
     } = options;
 
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
@@ -182,22 +182,19 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
                 const footprint = gltf && includeFootprints && tilesetCenter
                     ? computeGltfFootprint(gltf, {
                           modelMatrix,
-                          referenceCenter: tilesetCenter,
-                          contentUpAxis
+                          referenceCenter: tilesetCenter
                       })
                     : null;
                 const buildingFootprints = gltf && includeFootprints && tilesetCenter
                     ? computeGltfBuildingFootprints(gltf, {
                           modelMatrix,
-                          referenceCenter: tilesetCenter,
-                          contentUpAxis
+                          referenceCenter: tilesetCenter
                       })
                     : [];
                 const rayCheck = gltf && ray
                     ? rayIntersectsGltf(gltf, ray, {
                           ...rayOptions,
-                          modelMatrix,
-                          contentUpAxis
+                          modelMatrix
                       })
                     : null;
 
@@ -267,7 +264,7 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
                     selectionDistanceMeters,
                     footprint,
                     buildingFootprints,
-                    contentUpAxis
+                    matrixApplyMode: GLTF_MATRIX_APPLY_MODE
                 };
             } catch (error) {
                 if (debug) {
@@ -500,7 +497,6 @@ export function rayIntersectsGltf(gltf, ray, options = {}) {
     const json = gltf.json;
     const sceneRootNodes = getSceneRootNodes(json);
     const modelMatrix = isMatrix4(options.modelMatrix) ? options.modelMatrix : IDENTITY_MATRIX_4;
-    const contentUpAxis = getContentUpAxis(options.contentUpAxis);
     let trianglesTested = 0;
 
     for (const nodeIndex of sceneRootNodes) {
@@ -511,8 +507,7 @@ export function rayIntersectsGltf(gltf, ray, options = {}) {
             origin,
             direction,
             maxTriangles,
-            trianglesTested,
-            contentUpAxis
+            trianglesTested
         );
 
         trianglesTested = hit.trianglesTested;
@@ -559,7 +554,6 @@ export function computeGltfFootprint(gltf, options = {}) {
     const json = gltf.json;
     const sceneRootNodes = getSceneRootNodes(json);
     const modelMatrix = isMatrix4(options.modelMatrix) ? options.modelMatrix : IDENTITY_MATRIX_4;
-    const contentUpAxis = getContentUpAxis(options.contentUpAxis);
     const maxPointCount =
         Number.isFinite(options.maxPointCount) && options.maxPointCount > 0
             ? Math.floor(options.maxPointCount)
@@ -597,8 +591,7 @@ export function computeGltfFootprint(gltf, options = {}) {
             referenceCenter,
             footprintPoints,
             footprintStats,
-            footprintSources.length - sourceIndex,
-            contentUpAxis
+            footprintSources.length - sourceIndex
         );
     }
 
@@ -638,7 +631,6 @@ export function computeGltfBuildingFootprints(gltf, options = {}) {
     }
 
     const modelMatrix = isMatrix4(options.modelMatrix) ? options.modelMatrix : IDENTITY_MATRIX_4;
-    const contentUpAxis = getContentUpAxis(options.contentUpAxis);
     const maxPointsPerBuilding =
         Number.isFinite(options.maxPointsPerBuilding) && options.maxPointsPerBuilding > 0
             ? Math.floor(options.maxPointsPerBuilding)
@@ -669,8 +661,7 @@ export function computeGltfBuildingFootprints(gltf, options = {}) {
                 gltf,
                 sourceGroup.sources,
                 referenceCenter,
-                maxPointsPerBuilding,
-                contentUpAxis
+                maxPointsPerBuilding
             )
         )
         .filter((footprint) => {
@@ -946,8 +937,7 @@ function appendFootprintSourcePoints(
     referenceCenter,
     footprintPoints,
     footprintStats,
-    remainingSourceCount,
-    contentUpAxis
+    remainingSourceCount
 ) {
     const remainingBudget = Math.max(0, footprintStats.maxPointCount - footprintStats.sampledPointCount);
     if (remainingBudget === 0) {
@@ -986,8 +976,7 @@ function appendFootprintSourcePoints(
                     positions,
                     vertexIndex * 3,
                     source.worldMatrix,
-                    useTransform,
-                    contentUpAxis
+                    useTransform
                 );
                 const latLonHeight = ecefToLatLonHeight(worldPoint);
                 if (!latLonHeight) continue;
@@ -1005,8 +994,7 @@ function appendFootprintSourcePoints(
                     positions,
                     vertexIndex * 3,
                     source.worldMatrix,
-                    useTransform,
-                    contentUpAxis
+                    useTransform
                 );
                 const latLonHeight = ecefToLatLonHeight(worldPoint);
                 if (!latLonHeight) continue;
@@ -1109,7 +1097,7 @@ function isValidVertexIndex(value, vertexCount) {
     return Number.isInteger(value) && value >= 0 && value < vertexCount;
 }
 
-function computeFootprintFromSources(gltf, sources, referenceCenter, maxPointCount, contentUpAxis = "Y") {
+function computeFootprintFromSources(gltf, sources, referenceCenter, maxPointCount) {
     const footprintPoints = [];
     const footprintStats = {
         sampledPointCount: 0,
@@ -1134,8 +1122,7 @@ function computeFootprintFromSources(gltf, sources, referenceCenter, maxPointCou
             referenceCenter,
             footprintPoints,
             footprintStats,
-            sources.length - sourceIndex,
-            contentUpAxis
+            sources.length - sourceIndex
         );
     }
 
@@ -1162,16 +1149,7 @@ function computeFootprintFromSources(gltf, sources, referenceCenter, maxPointCou
     };
 }
 
-function testRayAgainstNode(
-    gltf,
-    nodeIndex,
-    parentMatrix,
-    origin,
-    direction,
-    maxTriangles,
-    startCount,
-    contentUpAxis
-) {
+function testRayAgainstNode(gltf, nodeIndex, parentMatrix, origin, direction, maxTriangles, startCount) {
     const node = gltf?.json?.nodes?.[nodeIndex];
     if (!node) {
         return { hit: false, trianglesTested: startCount };
@@ -1190,8 +1168,7 @@ function testRayAgainstNode(
             origin,
             direction,
             maxTriangles,
-            trianglesTested,
-            contentUpAxis
+            trianglesTested
         );
         trianglesTested = hit.trianglesTested;
 
@@ -1208,8 +1185,7 @@ function testRayAgainstNode(
             origin,
             direction,
             maxTriangles,
-            trianglesTested,
-            contentUpAxis
+            trianglesTested
         );
         trianglesTested = hit.trianglesTested;
 
@@ -1221,16 +1197,7 @@ function testRayAgainstNode(
     return { hit: false, trianglesTested };
 }
 
-function testRayAgainstMesh(
-    gltf,
-    mesh,
-    worldMatrix,
-    origin,
-    direction,
-    maxTriangles,
-    startCount,
-    contentUpAxis
-) {
+function testRayAgainstMesh(gltf, mesh, worldMatrix, origin, direction, maxTriangles, startCount) {
     let trianglesTested = startCount;
 
     for (const primitive of mesh?.primitives ?? []) {
@@ -1256,8 +1223,7 @@ function testRayAgainstMesh(
             indices,
             worldMatrix,
             maxTriangles,
-            trianglesTested,
-            contentUpAxis
+            trianglesTested
         );
 
         trianglesTested = hit.trianglesTested;
@@ -1270,16 +1236,7 @@ function testRayAgainstMesh(
     return { hit: false, trianglesTested };
 }
 
-function testRayAgainstPrimitive(
-    origin,
-    direction,
-    positions,
-    indices,
-    worldMatrix,
-    maxTriangles,
-    startCount,
-    contentUpAxis
-) {
+function testRayAgainstPrimitive(origin, direction, positions, indices, worldMatrix, maxTriangles, startCount) {
     let trianglesTested = startCount;
 
     const positionStride = 3;
@@ -1296,9 +1253,9 @@ function testRayAgainstPrimitive(
         const idx1 = indexArray ? indexArray[indexBase + 1] : indexBase + 1;
         const idx2 = indexArray ? indexArray[indexBase + 2] : indexBase + 2;
 
-        const v0 = readVec3(positions, idx0 * positionStride, worldMatrix, useTransform, contentUpAxis);
-        const v1 = readVec3(positions, idx1 * positionStride, worldMatrix, useTransform, contentUpAxis);
-        const v2 = readVec3(positions, idx2 * positionStride, worldMatrix, useTransform, contentUpAxis);
+        const v0 = readVec3(positions, idx0 * positionStride, worldMatrix, useTransform);
+        const v1 = readVec3(positions, idx1 * positionStride, worldMatrix, useTransform);
+        const v2 = readVec3(positions, idx2 * positionStride, worldMatrix, useTransform);
 
         trianglesTested += 1;
 
@@ -1520,32 +1477,9 @@ function dotVec3(a, b) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
-function readVec3(
-    buffer,
-    index,
-    matrix = IDENTITY_MATRIX_4,
-    applyTransform = false,
-    contentUpAxis = "Y"
-) {
-    const point = reorientPointByUpAxis(
-        [buffer[index], buffer[index + 1], buffer[index + 2]],
-        contentUpAxis
-    );
-    return applyTransform ? transformPointMat4(matrix, point) : point;
-}
-
-function getContentUpAxis(value) {
-    const normalized = typeof value === "string" ? value.trim().toUpperCase() : "Y";
-    return normalized === "Z" ? "Z" : "Y";
-}
-
-function reorientPointByUpAxis(point, contentUpAxis) {
-    if (contentUpAxis === "Z") {
-        const [x, y, z] = point;
-        // Rotate +90deg around X: glTF Y-up -> tile Z-up.
-        return [x, z, -y];
-    }
-    return point;
+function readVec3(buffer, index, matrix = IDENTITY_MATRIX_4, applyTransform = false) {
+    const point = [buffer[index], buffer[index + 1], buffer[index + 2]];
+    return applyTransform ? transformPointGltfMat4(matrix, point) : point;
 }
 
 function getTransformedAccessorBounds(accessor, worldMatrix) {
@@ -1572,7 +1506,7 @@ function getTransformedAccessorBounds(accessor, worldMatrix) {
         [max[0], min[1], max[2]],
         [max[0], max[1], min[2]],
         [max[0], max[1], max[2]]
-    ].map((corner) => transformPointMat4(worldMatrix, corner));
+    ].map((corner) => transformPointGltfMat4(worldMatrix, corner));
 
     const worldMin = [Infinity, Infinity, Infinity];
     const worldMax = [-Infinity, -Infinity, -Infinity];
@@ -1611,7 +1545,7 @@ function getTransformedAccessorCorners(accessor, worldMatrix) {
         [max[0], min[1], max[2]],
         [max[0], max[1], min[2]],
         [max[0], max[1], max[2]]
-    ].map((corner) => transformPointMat4(worldMatrix, corner));
+    ].map((corner) => transformPointGltfMat4(worldMatrix, corner));
 }
 
 async function buildTilesetIndex(tilesetUrl, debug) {
@@ -2088,13 +2022,15 @@ function computePolygonArea2d(points) {
     return area / 2;
 }
 
-function transformPointMat4(matrix, point) {
+function transformPointGltfMat4(matrix, point) {
     const [x, y, z] = point;
 
+    // Hamburg LoD3 b3dm tiles store glTF matrices column-major but apply them as M^T * p
+    // (matches Cesium/geoportal placement). Standard M*p skews footprints ~45deg.
     return [
-        matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12],
-        matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13],
-        matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14]
+        matrix[0] * x + matrix[1] * y + matrix[2] * z + matrix[12],
+        matrix[4] * x + matrix[5] * y + matrix[6] * z + matrix[13],
+        matrix[8] * x + matrix[9] * y + matrix[10] * z + matrix[14]
     ];
 }
 

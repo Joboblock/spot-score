@@ -993,7 +993,7 @@ function buildTileFootprintPopupHtml(tile, buildingFootprint = null, buildingInd
         Footprint sampled points: ${activeFootprint?.sampledPointCount ?? activeFootprint?.sourcePointCount ?? 0}<br/>
         Footprint total vertices: ${activeFootprint?.totalVertexCount ?? 0}${activeFootprint?.isSampled ? " (sampled)" : ""}<br/>
         Footprint area: ${Number.isFinite(activeFootprint?.areaSquareMeters) ? `${activeFootprint.areaSquareMeters.toFixed(1)} m²` : "n/a"}<br/>
-        Content up-axis: ${escapeHtml(tile?.contentUpAxis ?? "Y")}<br/>
+        Matrix apply mode: ${escapeHtml(tile?.matrixApplyMode ?? "n/a")}<br/>
         Tile center: ${formatLatLon(tileCenter?.lat, tileCenter?.lon)}<br/>
         Ray result: ${escapeHtml(rayCheck?.reason ?? "n/a")}<br/>
         Triangles tested: ${rayCheck?.trianglesTested ?? 0}
