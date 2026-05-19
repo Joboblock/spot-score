@@ -100,9 +100,15 @@ const IDENTITY_MATRIX_4 = Object.freeze([
     0, 0, 1, 0,
     0, 0, 0, 1
 ]);
+const B3DM_Y_UP_TO_Z_UP_MATRIX = Object.freeze([
+    1, 0, 0, 0,
+    0, 0, 1, 0,
+    0, -1, 0, 0,
+    0, 0, 0, 1
+]);
 const DEFAULT_FOOTPRINT_MAX_POINTS = 12000;
 const DEFAULT_BUILDING_FOOTPRINT_MAX_POINTS = 1200;
-const GLTF_MATRIX_APPLY_MODE = "transposed-3x3";
+const GLTF_MATRIX_APPLY_MODE = "cesium-column-major";
 const ACCESSOR_CACHE = new WeakMap();
 
 export async function loadNearbyBuildingData(lat, lon, options = {}) {
@@ -177,8 +183,16 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
                 const tilesetCenter = tilesetEntry?.region
                     ? getRegionCenter(tilesetEntry.region)
                     : tileCenter;
-                const rtcCenter = getRtcCenter(featureTable, gltf);
-                const modelMatrix = buildModelMatrix(rtcCenter, tilesetEntry?.transform);
+                const featureRtcCenter = getFeatureRtcCenter(featureTable);
+                const gltfRtcCenter = getGltfRtcCenter(gltf);
+                const rtcCenter = featureRtcCenter ?? gltfRtcCenter;
+                const modelMatrix = buildModelMatrix(
+                    {
+                        featureRtcCenter,
+                        gltfRtcCenter
+                    },
+                    tilesetEntry?.transform
+                );
                 const footprint = gltf && includeFootprints && tilesetCenter
                     ? computeGltfFootprint(gltf, {
                           modelMatrix,
@@ -1871,12 +1885,16 @@ function parseB3dmHeader(buffer) {
     return { magic, version, byteLength };
 }
 
-function getRtcCenter(featureTable, gltf) {
+function getFeatureRtcCenter(featureTable) {
     const featureRtc = featureTable?.RTC_CENTER;
     if (Array.isArray(featureRtc) && featureRtc.length >= 3 && featureRtc.every(Number.isFinite)) {
         return featureRtc.slice(0, 3);
     }
 
+    return null;
+}
+
+function getGltfRtcCenter(gltf) {
     const gltfRtc = gltf?.json?.extensions?.CESIUM_RTC?.center;
     if (Array.isArray(gltfRtc) && gltfRtc.length >= 3 && gltfRtc.every(Number.isFinite)) {
         return gltfRtc.slice(0, 3);
@@ -1885,16 +1903,26 @@ function getRtcCenter(featureTable, gltf) {
     return null;
 }
 
-function buildModelMatrix(rtcCenter, tilesetTransform) {
-    const translationMatrix = Array.isArray(rtcCenter)
-        ? makeTranslationMatrix(rtcCenter[0], rtcCenter[1], rtcCenter[2])
-        : IDENTITY_MATRIX_4;
+function buildModelMatrix(rtcTransforms, tilesetTransform) {
+    let modelMatrix = isMatrix4(tilesetTransform) ? tilesetTransform : IDENTITY_MATRIX_4;
 
-    if (isMatrix4(tilesetTransform)) {
-        return multiplyMat4(tilesetTransform, translationMatrix);
+    const featureRtcCenter = rtcTransforms?.featureRtcCenter;
+    if (Array.isArray(featureRtcCenter)) {
+        modelMatrix = multiplyMat4(
+            modelMatrix,
+            makeTranslationMatrix(featureRtcCenter[0], featureRtcCenter[1], featureRtcCenter[2])
+        );
     }
 
-    return translationMatrix;
+    const gltfRtcCenter = rtcTransforms?.gltfRtcCenter;
+    if (Array.isArray(gltfRtcCenter)) {
+        modelMatrix = multiplyMat4(
+            modelMatrix,
+            makeTranslationMatrix(gltfRtcCenter[0], gltfRtcCenter[1], gltfRtcCenter[2])
+        );
+    }
+
+    return multiplyMat4(modelMatrix, B3DM_Y_UP_TO_Z_UP_MATRIX);
 }
 
 function getSceneRootNodes(json) {
@@ -2025,12 +2053,11 @@ function computePolygonArea2d(points) {
 function transformPointGltfMat4(matrix, point) {
     const [x, y, z] = point;
 
-    // Hamburg LoD3 b3dm tiles store glTF matrices column-major but apply them as M^T * p
-    // (matches Cesium/geoportal placement). Standard M*p skews footprints ~45deg.
+    // glTF and 3D Tiles use column-major matrices with column vectors.
     return [
-        matrix[0] * x + matrix[1] * y + matrix[2] * z + matrix[12],
-        matrix[4] * x + matrix[5] * y + matrix[6] * z + matrix[13],
-        matrix[8] * x + matrix[9] * y + matrix[10] * z + matrix[14]
+        matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12],
+        matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13],
+        matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14]
     ];
 }
 
