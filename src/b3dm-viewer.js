@@ -1,97 +1,5 @@
-import { LOCAL_B3DM_TILE_METADATA } from "./b3dm-local-tiles.js";
-
-const DEFAULT_B3DM_PATH = "./Area 1 neu";
 const DEFAULT_TILESET_URL =
     "https://daten-hamburg.de/gdi3d/datasource-data/LoD3_untexturiert/tileset.json";
-const DEFAULT_BOUNDS = [
-    [53.41062884725186, 9.732240484945219],
-    [53.72838568700598, 10.29272015751267]
-];
-
-const B3DM_TILES = [
-    "6431.b3dm",
-    "6432.b3dm",
-    "6433.b3dm",
-    "6434.b3dm",
-    "6528.b3dm",
-    "6529.b3dm",
-    "6530.b3dm",
-    "6531.b3dm",
-    "6532.b3dm",
-    "6533.b3dm",
-    "6534.b3dm",
-    "6627.b3dm",
-    "6628.b3dm",
-    "6629.b3dm",
-    "6630.b3dm",
-    "6631.b3dm",
-    "6632.b3dm",
-    "6633.b3dm",
-    "6634.b3dm",
-    "6728.b3dm",
-    "6729.b3dm",
-    "6730.b3dm",
-    "6731.b3dm",
-    "6732.b3dm",
-    "6733.b3dm",
-    "6734.b3dm",
-    "6829.b3dm",
-    "6830.b3dm",
-    "6831.b3dm",
-    "6832.b3dm",
-    "6833.b3dm",
-    "6834.b3dm",
-    "6835.b3dm",
-    "6836.b3dm",
-    "6929.b3dm",
-    "6930.b3dm",
-    "6931.b3dm",
-    "6932.b3dm",
-    "6933.b3dm",
-    "6934.b3dm",
-    "6935.b3dm",
-    "6936.b3dm",
-    "7029.b3dm",
-    "7030.b3dm",
-    "7031.b3dm",
-    "7032.b3dm",
-    "7033.b3dm",
-    "7034.b3dm",
-    "7035.b3dm",
-    "7036.b3dm",
-    "7129.b3dm",
-    "7130.b3dm",
-    "7131.b3dm",
-    "7132.b3dm",
-    "7133.b3dm",
-    "7134.b3dm",
-    "7135.b3dm",
-    "7229.b3dm",
-    "7230.b3dm",
-    "7231.b3dm",
-    "7232.b3dm",
-    "7233.b3dm",
-    "7234.b3dm",
-    "7235.b3dm",
-    "7329.b3dm",
-    "7330.b3dm",
-    "7331.b3dm",
-    "7332.b3dm",
-    "7333.b3dm",
-    "7334.b3dm",
-    "7335.b3dm",
-    "7431.b3dm",
-    "7432.b3dm",
-    "7433.b3dm",
-    "7434.b3dm",
-    "7435.b3dm",
-    "7533.b3dm",
-    "7534.b3dm",
-    "7535.b3dm",
-    "7633.b3dm",
-    "7634.b3dm",
-    "7635.b3dm"
-];
 
 let tilesetIndexPromise = null;
 const IDENTITY_MATRIX_4 = Object.freeze([
@@ -114,14 +22,11 @@ const ACCESSOR_CACHE = new WeakMap();
 export async function loadNearbyBuildingData(lat, lon, options = {}) {
     const {
         debug = true,
-        path = DEFAULT_B3DM_PATH,
-        bounds = DEFAULT_BOUNDS,
         neighborRadius = 1,
         maxTiles = 9,
         ray = null,
         rayOptions = {},
         includeFootprints = true,
-        useTileset = true,
         tilesetUrl = DEFAULT_TILESET_URL
     } = options;
 
@@ -132,36 +37,23 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
         return [];
     }
 
-    const localTilePath = isLocalTilePath(path);
-    const tilesetIndex = useTileset && !localTilePath ? await loadTilesetIndex(tilesetUrl, debug) : null;
-    const tileRequests = localTilePath
-        ? pickNearbyLocalTiles(lat, lon, Math.max(1, maxTiles)).map((entry) => ({
-              tile: entry.tile,
-              url: `${path}/${entry.tile}`,
-              tileCenter: {
-                  lat: entry.lat,
-                  lon: entry.lon,
-                  height: entry.height ?? 0
-              },
-              selectionDistanceMeters: entry.distanceMeters,
-              tilesetEntry: null
-          }))
-        : pickNearbyTilesetEntries(lat, lon, tilesetIndex, {
-              maxTiles: Math.max(1, maxTiles),
-              neighborRadius
-          }).map((entry) => ({
-              tile: entry.tile,
-              url: entry.url,
-              tileCenter: entry.center,
-              selectionDistanceMeters: entry.distanceMeters,
-              tilesetEntry: entry
-          }));
+    const tilesetIndex = await loadTilesetIndex(tilesetUrl, debug);
+    const tileRequests = pickNearbyTilesetEntries(lat, lon, tilesetIndex, {
+        maxTiles: Math.max(1, maxTiles),
+        neighborRadius
+    }).map((entry) => ({
+        tile: entry.tile,
+        url: entry.url,
+        tileCenter: entry.center,
+        selectionDistanceMeters: entry.distanceMeters,
+        tilesetEntry: entry
+    }));
 
     if (debug) {
         console.info("[b3dm] Attempting to load nearby tiles", {
             lat,
             lon,
-            selectionMode: localTilePath ? "local-centers" : "tileset-regions",
+            selectionMode: "tileset-regions",
             tiles: tileRequests.map((request) => request.tile)
         });
     }
@@ -255,7 +147,7 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
                         });
                     }
 
-                    if (useTileset && !localTilePath && !tilesetEntry) {
+                    if (!tilesetEntry) {
                         console.info("[b3dm] No tileset mapping for tile", {
                             tile,
                             tilesetUrl
@@ -294,7 +186,7 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
 
     const loaded = results.filter(Boolean);
     const debugSummary = {
-        selectionMode: localTilePath ? "local-centers" : "tileset-regions",
+    selectionMode: "tileset-regions",
         requested: tileRequests.length,
         loaded: loaded.length,
         requestedTiles: tileRequests.map((request) => ({
@@ -1764,44 +1656,6 @@ function projectLatLonToLocalPoint(point, referenceCenter) {
     };
 }
 
-function pickNearbyTiles(lat, lon, bounds, neighborRadius, maxTiles) {
-    const [[minLat, minLon], [maxLat, maxLon]] = bounds;
-    const normalizedX = clamp((lon - minLon) / (maxLon - minLon), 0, 1);
-    const normalizedY = clamp((lat - minLat) / (maxLat - minLat), 0, 1);
-
-    const gridMinX = TILE_INDEX.minX;
-    const gridMaxX = TILE_INDEX.maxX;
-    const gridMinY = TILE_INDEX.minY;
-    const gridMaxY = TILE_INDEX.maxY;
-
-    const xIndex = Math.round(gridMinX + normalizedX * (gridMaxX - gridMinX));
-    const yIndex = Math.round(gridMinY + normalizedY * (gridMaxY - gridMinY));
-
-    const candidates = [];
-
-    for (let dx = -neighborRadius; dx <= neighborRadius; dx += 1) {
-        for (let dy = -neighborRadius; dy <= neighborRadius; dy += 1) {
-            const key = `${xIndex + dx}-${yIndex + dy}`;
-            const tile = TILE_INDEX.tiles.get(key);
-            if (tile) {
-                candidates.push(tile);
-            }
-        }
-    }
-
-    const tiles = candidates.slice(0, Math.max(1, maxTiles));
-    return { tiles, targetKey: `${xIndex}-${yIndex}` };
-}
-
-function pickNearbyLocalTiles(lat, lon, maxTiles) {
-    return LOCAL_B3DM_TILE_METADATA
-        .map((entry) => ({
-            ...entry,
-            distanceMeters: distanceMetersBetweenLatLon(lat, lon, entry.lat, entry.lon)
-        }))
-        .sort((a, b) => a.distanceMeters - b.distanceMeters)
-        .slice(0, maxTiles);
-}
 
 function pickNearbyTilesetEntries(lat, lon, tilesetIndex, options = {}) {
     const maxTiles = Number.isFinite(options.maxTiles) ? options.maxTiles : 9;
@@ -1816,33 +1670,6 @@ function pickNearbyTilesetEntries(lat, lon, tilesetIndex, options = {}) {
         .slice(0, maxTiles);
 }
 
-function buildTileIndex(tiles) {
-    const entries = tiles
-        .map((tile) => {
-            const match = tile.match(/^(\d)(\d)(\d)(\d)\.b3dm$/);
-            if (!match) return null;
-            const x = Number(match[1] + match[2]);
-            const y = Number(match[3] + match[4]);
-            return { tile, x, y };
-        })
-        .filter(Boolean);
-
-    const minX = Math.min(...entries.map((entry) => entry.x));
-    const maxX = Math.max(...entries.map((entry) => entry.x));
-    const minY = Math.min(...entries.map((entry) => entry.y));
-    const maxY = Math.max(...entries.map((entry) => entry.y));
-
-    const map = new Map();
-    entries.forEach((entry) => {
-        map.set(`${entry.x}-${entry.y}`, entry.tile);
-    });
-
-    return { tiles: map, minX, maxX, minY, maxY };
-}
-
-function isLocalTilePath(path) {
-    return typeof path === "string" && !/^https?:\/\//i.test(path);
-}
 
 function distanceMetersBetweenLatLon(latA, lonA, latB, lonB) {
     const avgLatRad = ((latA + latB) / 2) * (Math.PI / 180);

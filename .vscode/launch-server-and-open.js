@@ -22,7 +22,6 @@ const server = http.createServer((req, res) => {
     if (ext === ".js") contentType = "text/javascript";
     if (ext === ".css") contentType = "text/css";
     if (ext === ".json") contentType = "application/json";
-    if (ext === ".b3dm") contentType = "application/octet-stream";
 
     fs.readFile(filePath, (err, content) => {
         if (err) {
