@@ -1682,3 +1682,142 @@ button:focus-visible,
 }
 
 .prefs-btn:hover { transform: scale(1.1); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SpotScore v2 — Append to END of style.css
+   Enthält: Score-Farben, Radar-Chart, Map-Pins, QR-Code, Find-Best-Button,
+            fixe weight-bar Animationen, score__meta Coloring
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ─── Score colors ───────────────────────────────────────────────────────── */
+.score--good { color: #1a7a3c !important; }
+.score--mid  { color: #b07d0a !important; }
+.score--bad  { color: #c0392b !important; }
+
+.score-display.score--good { color: #1a7a3c; }
+.score-display.score--mid  { color: #b07d0a; }
+.score-display.score--bad  { color: #c0392b; }
+
+.accordion__meta.score--good { color: #1a7a3c; }
+.accordion__meta.score--mid  { color: #b07d0a; }
+.accordion__meta.score--bad  { color: #c0392b; }
+
+/* ─── Radar chart ────────────────────────────────────────────────────────── */
+.radar-wrap {
+    padding: 12px 0 4px;
+    display: flex;
+    justify-content: center;
+}
+
+.radar-wrap--compare {
+    padding: 16px 0 8px;
+}
+
+/* ─── Multiplayer map pins ───────────────────────────────────────────────── */
+.mp-map-pin {
+    position: relative;
+    width: 44px;
+    height: 44px;
+    background: var(--pin-color, #e74c3c);
+    border-radius: 50% 50% 50% 0;
+    transform: rotate(-45deg);
+    border: 2.5px solid white;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.28);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: transform 0.15s ease;
+}
+
+.mp-map-pin:hover { transform: rotate(-45deg) scale(1.1); }
+
+.mp-map-pin__score {
+    transform: rotate(45deg);
+    font-size: 0.72rem;
+    font-weight: 800;
+    color: white;
+    line-height: 1;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+    font-variant-numeric: tabular-nums;
+}
+
+.mp-popup strong { display: block; font-size: 0.9rem; margin-bottom: 3px; }
+
+/* ─── QR Code ────────────────────────────────────────────────────────────── */
+.mp-qr-wrap {
+    margin-top: 10px;
+    display: flex;
+    justify-content: center;
+}
+
+.mp-qr {
+    width: 100px;
+    height: 100px;
+    border-radius: 8px;
+    border: 1px solid var(--border-dark);
+    padding: 4px;
+    background: white;
+}
+
+/* ─── Find best spot button ──────────────────────────────────────────────── */
+.find-best-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    margin-top: 4px;
+    padding: 12px 16px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(14, 77, 37, 0.08), rgba(192, 237, 85, 0.15));
+    border: 1.5px dashed rgba(14, 77, 37, 0.3);
+    color: var(--color-forest);
+    font-size: 0.9rem;
+    font-weight: 700;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, transform 0.12s;
+    min-height: auto;
+    box-shadow: none;
+    justify-content: center;
+}
+
+.find-best-btn:hover {
+    background: linear-gradient(135deg, rgba(14, 77, 37, 0.14), rgba(192, 237, 85, 0.24));
+    border-color: rgba(14, 77, 37, 0.5);
+    border-style: solid;
+    transform: translateY(-1px);
+}
+
+.find-best-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+}
+
+/* ─── Onboarding weight bar animation fix ────────────────────────────────── */
+/* Bars start at 0 and animate to data-pct via JS setTimeout */
+.ob-weight-bar-fill {
+    transition: width 0.7s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+/* ─── User color dots in panel & ranking ─────────────────────────────────── */
+.mp-spot-item__by,
+.mp-rank-item__by {
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
+/* ─── Score coloring in compare table ────────────────────────────────────── */
+.compare-cell span.score--good { font-weight: 800; }
+.compare-cell span.score--bad  { opacity: 0.85; }
+
+/* ─── Winner score color ─────────────────────────────────────────────────── */
+.winner-score.score--good { color: #1a7a3c; }
+.winner-score.score--mid  { color: #b07d0a; }
+.winner-score.score--bad  { color: #c0392b; }
+
+/* ─── Accordion meta score colors ────────────────────────────────────────── */
+.result-card--score .score-display {
+    transition: color 0.2s ease;
+}
