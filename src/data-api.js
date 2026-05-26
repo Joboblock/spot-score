@@ -58,15 +58,12 @@ export async function fetchWeatherStationsWithinRadius(lat, lon, radiusKm = NETA
         lon_ne: String(bbox.lonNe),
         lat_sw: String(bbox.latSw),
         lon_sw: String(bbox.lonSw),
+        access_token: decodeURIComponent(ACCESS_TOKEN),
         required_data: "temperature",
         filter: "false"
     });
 
-    const response = await fetch(`${WEATHER_BASE_URL}?${params.toString()}`, {
-        headers: {
-            Authorization: `Bearer ${ACCESS_TOKEN}`
-        }
-    });
+    const response = await fetch(`${WEATHER_BASE_URL}?${params.toString()}`);
 
     if (!response.ok) {
         throw new Error(`Could not load Netatmo data (HTTP ${response.status}).`);
