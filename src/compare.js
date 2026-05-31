@@ -36,29 +36,9 @@ const PLACEHOLDER_SPOT_NAMES = new Set(["Selected spot", "Challenger spot", "Loa
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
-    injectBanner();
     watchOutputForSpotResults();
     interceptMapClicks();
 });
-
-// ─── Banner injection ─────────────────────────────────────────────────────────
-
-function injectBanner() {
-    const banner = document.createElement("div");
-    banner.id = "compareBanner";
-    banner.className = "compare-banner is-hidden";
-    banner.setAttribute("aria-live", "polite");
-    banner.innerHTML = `
-        <div class="compare-banner__inner">
-            <span class="compare-banner__pill">Spot A pinned</span>
-            <p class="compare-banner__name"></p>
-            <p class="compare-banner__hint">Click anywhere on the map to pick Spot B</p>
-        </div>
-        <button type="button" class="compare-banner__cancel">✕ Cancel</button>
-    `;
-    banner.querySelector(".compare-banner__cancel").addEventListener("click", exitCompareMode);
-    document.body.appendChild(banner);
-}
 
 // ─── MutationObserver: detect when a single-spot result is rendered ───────────
 
@@ -238,25 +218,16 @@ async function onCompareClick(spot) {
     pinnedSpot = { ...spot, name: currentHeroName || spot.name, scores };
     isCompareMode = true;
 
-    const banner = document.getElementById("compareBanner");
-    if (banner) {
-        banner.querySelector(".compare-banner__name").textContent = spot.name;
-        banner.classList.remove("is-hidden");
-    }
-
-    resolveSpotName(pinnedSpot, { side: "a", updateBanner: true });
+    resolveSpotName(pinnedSpot, { side: "a" });
 
     // Show instruction in output
-    output.innerHTML = `<section class="result-card"><p class="loading">📍 Spot A pinned: "${spot.name}".<br><br>Now click anywhere on the map to pick Spot B.</p></section>`;
+    output.innerHTML = `<section class="result-card"><p class="loading">📍Current Spot: "${spot.name}".<br><br>Now click anywhere on the map to select Spot to compare.</p></section>`;
     output.classList.remove("is-hidden");
 }
 
 function exitCompareMode() {
     pinnedSpot = null;
     isCompareMode = false;
-
-    const banner = document.getElementById("compareBanner");
-    if (banner) banner.classList.add("is-hidden");
 
     // Remove compare marker if one was placed
     const mapEl = document.getElementById("map");
@@ -424,14 +395,6 @@ async function resolveSpotName(spot, options = {}) {
 function updateSpotNameInDom(spot, resolvedName, options = {}, previousName = "") {
     const output = document.getElementById("output");
     if (!output) return;
-
-    if (options.updateBanner) {
-        const banner = document.getElementById("compareBanner");
-        const bannerName = banner?.querySelector(".compare-banner__name");
-        if (bannerName) {
-            bannerName.textContent = resolvedName;
-        }
-    }
 
     if (options.side) {
         const headerSpot = output.querySelector(`.compare-header__spot--${options.side}`);
