@@ -19,9 +19,16 @@ const NETATMO_NEAREST_DISTANCE_FACTOR = 1.5;
 const DISTANCE_WEIGHT_MIN_KM = 0.05;
 const WEATHER_METRICS = ["temperature", "humidity", "windStrength", "rain24h"];
 const CITY_AVERAGE_SAMPLE_POINT_COUNT = 5;
+const API_BBOX_TILE_SIZE_DEG = 0.02;
 
 let cachedNoiseFeatures = null;
 let cachedNoisePromise = null;
+const WEATHER_STATION_TILE_CACHE = new Map();
+const WEATHER_STATION_TILE_PROMISES = new Map();
+const SENSOR_TILE_CACHE = new Map();
+const SENSOR_TILE_PROMISES = new Map();
+const TEMPERATURE_CACHE = new Map();
+const TEMPERATURE_PROMISES = new Map();
 
 export async function fetchNoiseMapData(options = {}) {
     const { bbox, limit = NOISE_PAGE_LIMIT, offset = 0 } = options;
@@ -53,24 +60,8 @@ export async function fetchWeatherStationsWithinRadius(lat, lon, radiusKm = NETA
 
     const bbox = getBoundingBoxForRadius(lat, lon, radiusKm);
 
-    const params = new URLSearchParams({
-        lat_ne: String(bbox.latNe),
-        lon_ne: String(bbox.lonNe),
-        lat_sw: String(bbox.latSw),
-        lon_sw: String(bbox.lonSw),
-        access_token: decodeURIComponent(ACCESS_TOKEN),
-        required_data: "temperature",
-        filter: "false"
-    });
-
-    const response = await fetch(`${WEATHER_BASE_URL}?${params.toString()}`);
-
-    if (!response.ok) {
-        throw new Error(`Could not load Netatmo data (HTTP ${response.status}).`);
-    }
-
-    const data = await response.json();
-    return extractPublicWeatherStations(data?.body ?? [])
+    const stations = await fetchWeatherStationsForBbox(bbox);
+    return stations
         .map((station) => ({
             ...station,
             distanceKm: haversineDistanceKm(lat, lon, station.lat, station.lon)
@@ -334,15 +325,7 @@ async function fetchAverageCityTemperature(hamburgBounds) {
 
 async function fetchAirQualityForPoint(lat, lon) {
     const bbox = getBoundingBoxForRadius(lat, lon, SENSOR_COMMUNITY_RADIUS_KM);
-    const boxParam = `${bbox.latNe},${bbox.lonSw},${bbox.latSw},${bbox.lonNe}`;
-    const response = await fetch(`${SENSOR_COMMUNITY_BASE_URL}${boxParam}`);
-
-    if (!response.ok) {
-        throw new Error(`Could not load Sensor.Community data (HTTP ${response.status}).`);
-    }
-
-    const data = await response.json();
-    const rawEntries = Array.isArray(data) ? data : [];
+    const rawEntries = await fetchSensorCommunityForBbox(bbox);
     const readings = rawEntries
         .map((entry) => extractSensorCommunityReading(entry))
         .filter(Boolean)
@@ -395,6 +378,15 @@ function getHamburgTemperatureSamplePoints(hamburgBounds) {
 }
 
 async function fetchCurrentTemperatureAtPoint(lat, lon) {
+    const cacheKey = `${lat}:${lon}`;
+    if (TEMPERATURE_CACHE.has(cacheKey)) {
+        return TEMPERATURE_CACHE.get(cacheKey);
+    }
+
+    if (TEMPERATURE_PROMISES.has(cacheKey)) {
+        return TEMPERATURE_PROMISES.get(cacheKey);
+    }
+
     const params = new URLSearchParams({
         latitude: String(lat),
         longitude: String(lon),
@@ -402,19 +394,162 @@ async function fetchCurrentTemperatureAtPoint(lat, lon) {
         timezone: "auto"
     });
 
-    const response = await fetch(`${OPEN_METEO_BASE_URL}?${params.toString()}`);
+    const requestPromise = (async () => {
+        const response = await fetch(`${OPEN_METEO_BASE_URL}?${params.toString()}`);
+        if (!response.ok) {
+            throw new Error(`Could not load Open-Meteo current data (HTTP ${response.status}).`);
+        }
+
+        const data = await response.json();
+        const currentTemperature = data?.current?.temperature_2m;
+
+        if (!Number.isFinite(currentTemperature)) {
+            throw new Error("Open-Meteo response did not include current temperature.");
+        }
+
+        TEMPERATURE_CACHE.set(cacheKey, currentTemperature);
+        return currentTemperature;
+    })();
+
+    TEMPERATURE_PROMISES.set(cacheKey, requestPromise);
+
+    try {
+        return await requestPromise;
+    } finally {
+        TEMPERATURE_PROMISES.delete(cacheKey);
+    }
+}
+
+async function fetchWeatherStationsForBbox(bbox) {
+    const tiles = getBboxTiles(bbox);
+    const tileResults = await Promise.all(
+        tiles.map((tile) => fetchCachedTileData(
+            tile,
+            WEATHER_STATION_TILE_CACHE,
+            WEATHER_STATION_TILE_PROMISES,
+            fetchWeatherStationsForTile
+        ))
+    );
+
+    const stations = tileResults.flat().filter(Boolean);
+    const unique = new Map();
+    stations.forEach((station) => {
+        if (!station?.id) return;
+        unique.set(station.id, station);
+    });
+
+    return [...unique.values()];
+}
+
+async function fetchWeatherStationsForTile(tile) {
+    if (!ACCESS_TOKEN) {
+        throw new Error("Missing Netatmo access token in src/api-key.js.");
+    }
+
+    const params = new URLSearchParams({
+        lat_ne: String(tile.bbox.latNe),
+        lon_ne: String(tile.bbox.lonNe),
+        lat_sw: String(tile.bbox.latSw),
+        lon_sw: String(tile.bbox.lonSw),
+        access_token: decodeURIComponent(ACCESS_TOKEN),
+        required_data: "temperature",
+        filter: "false"
+    });
+
+    const response = await fetch(`${WEATHER_BASE_URL}?${params.toString()}`);
+
     if (!response.ok) {
-        throw new Error(`Could not load Open-Meteo current data (HTTP ${response.status}).`);
+        throw new Error(`Could not load Netatmo data (HTTP ${response.status}).`);
     }
 
     const data = await response.json();
-    const currentTemperature = data?.current?.temperature_2m;
+    return extractPublicWeatherStations(data?.body ?? []);
+}
 
-    if (!Number.isFinite(currentTemperature)) {
-        throw new Error("Open-Meteo response did not include current temperature.");
+async function fetchSensorCommunityForBbox(bbox) {
+    const tiles = getBboxTiles(bbox);
+    const tileResults = await Promise.all(
+        tiles.map((tile) => fetchCachedTileData(
+            tile,
+            SENSOR_TILE_CACHE,
+            SENSOR_TILE_PROMISES,
+            fetchSensorCommunityForTile
+        ))
+    );
+
+    return tileResults.flat().filter(Boolean);
+}
+
+async function fetchSensorCommunityForTile(tile) {
+    const boxParam = `${tile.bbox.latNe},${tile.bbox.lonSw},${tile.bbox.latSw},${tile.bbox.lonNe}`;
+    const response = await fetch(`${SENSOR_COMMUNITY_BASE_URL}${boxParam}`);
+
+    if (!response.ok) {
+        throw new Error(`Could not load Sensor.Community data (HTTP ${response.status}).`);
     }
 
-    return currentTemperature;
+    const data = await response.json();
+    return Array.isArray(data) ? data : [];
+}
+
+async function fetchCachedTileData(tile, cache, inflight, fetcher) {
+    if (cache.has(tile.key)) {
+        return cache.get(tile.key);
+    }
+
+    if (inflight.has(tile.key)) {
+        return inflight.get(tile.key);
+    }
+
+    const requestPromise = fetcher(tile)
+        .then((data) => {
+            cache.set(tile.key, data);
+            return data;
+        })
+        .finally(() => {
+            inflight.delete(tile.key);
+        });
+
+    inflight.set(tile.key, requestPromise);
+    return requestPromise;
+}
+
+function getBboxTiles(bbox) {
+    const tiles = [];
+    if (!bbox) return tiles;
+
+    const latMin = Math.min(bbox.latSw, bbox.latNe);
+    const latMax = Math.max(bbox.latSw, bbox.latNe);
+    const lonMin = Math.min(bbox.lonSw, bbox.lonNe);
+    const lonMax = Math.max(bbox.lonSw, bbox.lonNe);
+
+    const latStart = Math.floor(latMin / API_BBOX_TILE_SIZE_DEG);
+    const latEnd = Math.floor(latMax / API_BBOX_TILE_SIZE_DEG);
+    const lonStart = Math.floor(lonMin / API_BBOX_TILE_SIZE_DEG);
+    const lonEnd = Math.floor(lonMax / API_BBOX_TILE_SIZE_DEG);
+
+    for (let latIndex = latStart; latIndex <= latEnd; latIndex += 1) {
+        for (let lonIndex = lonStart; lonIndex <= lonEnd; lonIndex += 1) {
+            const bboxTile = tileIndexToBbox(latIndex, lonIndex);
+            tiles.push({
+                key: `${latIndex}:${lonIndex}`,
+                bbox: bboxTile
+            });
+        }
+    }
+
+    return tiles;
+}
+
+function tileIndexToBbox(latIndex, lonIndex) {
+    const latSw = latIndex * API_BBOX_TILE_SIZE_DEG;
+    const lonSw = lonIndex * API_BBOX_TILE_SIZE_DEG;
+    return {
+        latSw,
+        lonSw,
+        latNe: latSw + API_BBOX_TILE_SIZE_DEG,
+        lonNe: lonSw + API_BBOX_TILE_SIZE_DEG
+    };
 }
 
 function selectStationsForMetric(sortedStations, metricName) {
