@@ -31,6 +31,8 @@ let pinnedSpot = null;   // { lat, lon, name, noiseInfo, weatherSelection, cityT
 let isCompareMode = false;
 let lastKnownSpot = null; // filled by MutationObserver watching #output
 
+const PLACEHOLDER_SPOT_NAMES = new Set(["Selected spot", "Challenger spot", "Loading..."]);
+
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -231,8 +233,9 @@ async function onCompareClick(spot) {
     const resultStack = output?.querySelector(".result-stack");
     const existingScores = spot?.scores && Object.keys(spot.scores).length ? spot.scores : null;
     const scores = existingScores ?? (resultStack ? readScoresFromDOM(resultStack) : {});
+    const currentHeroName = resultStack?.querySelector(".result-card--hero h3")?.textContent?.trim();
 
-    pinnedSpot = { ...spot, scores };
+    pinnedSpot = { ...spot, name: currentHeroName || spot.name, scores };
     isCompareMode = true;
 
     const banner = document.getElementById("compareBanner");
@@ -240,6 +243,8 @@ async function onCompareClick(spot) {
         banner.querySelector(".compare-banner__name").textContent = spot.name;
         banner.classList.remove("is-hidden");
     }
+
+    resolveSpotName(pinnedSpot, { side: "a", updateBanner: true });
 
     // Show instruction in output
     output.innerHTML = `<section class="result-card"><p class="loading">📍 Spot A pinned: "${spot.name}".<br><br>Now click anywhere on the map to pick Spot B.</p></section>`;
@@ -366,6 +371,9 @@ function renderComparisonResults(spotA, spotB) {
             triggerSpotSelection(targetSpot);
         });
     });
+
+    resolveSpotName(spotA, { side: "a" });
+    resolveSpotName(spotB, { side: "b" });
 }
 
 function renderSpotName(spot, side) {
@@ -376,7 +384,7 @@ function renderSpotName(spot, side) {
         ? "compare-spot-name compare-spot-name--truncate"
         : "compare-spot-name";
     return `
-        <button type="button" class="compare-spot-button" data-spot="${side}" aria-label="View ${label}">
+        <button type="button" class="compare-spot-button" data-spot="${side}" data-lat="${spot?.lat}" data-lon="${spot?.lon}" aria-label="View ${label}">
             <strong class="${className}">${label}</strong>
         </button>
     `;
@@ -386,6 +394,87 @@ function triggerSpotSelection(spot) {
     if (!spot || !Number.isFinite(spot.lat) || !Number.isFinite(spot.lon)) return;
     if (window.__spotScoreApp?.handlePointSelection) {
         window.__spotScoreApp.handlePointSelection(spot.lat, spot.lon);
+    }
+}
+
+function shouldResolveSpotName(name) {
+    if (!name) return true;
+    const trimmed = name.trim();
+    if (!trimmed) return true;
+    if (PLACEHOLDER_SPOT_NAMES.has(trimmed)) return true;
+    return /loading/i.test(trimmed);
+}
+
+async function resolveSpotName(spot, options = {}) {
+    if (!spot || !Number.isFinite(spot.lat) || !Number.isFinite(spot.lon)) return;
+    if (spot.nameResolved) return;
+
+    const currentName = spot.name?.trim() ?? "";
+    if (!shouldResolveSpotName(currentName)) return;
+
+    const resolved = await fetchAddressLabelForCoordinates(spot.lat, spot.lon);
+    if (!resolved) return;
+
+    const previousName = spot.name;
+    spot.name = resolved;
+    spot.nameResolved = true;
+    updateSpotNameInDom(spot, resolved, options, previousName);
+}
+
+function updateSpotNameInDom(spot, resolvedName, options = {}, previousName = "") {
+    const output = document.getElementById("output");
+    if (!output) return;
+
+    if (options.updateBanner) {
+        const banner = document.getElementById("compareBanner");
+        const bannerName = banner?.querySelector(".compare-banner__name");
+        if (bannerName) {
+            bannerName.textContent = resolvedName;
+        }
+    }
+
+    if (options.side) {
+        const headerSpot = output.querySelector(`.compare-header__spot--${options.side}`);
+        const headerName = headerSpot?.querySelector(".compare-spot-name");
+        if (headerName) {
+            headerName.textContent = resolvedName;
+        }
+
+        const headerButton = headerSpot?.querySelector(".compare-spot-button");
+        if (headerButton) {
+            headerButton.setAttribute("aria-label", `View ${resolvedName}`);
+        }
+
+        const winnerName = output.querySelector(`.winner-banner--${options.side} .winner-name`);
+        if (winnerName) {
+            winnerName.textContent = resolvedName;
+        }
+    }
+
+    updateHeroNameIfCoordsMatch(output, spot, resolvedName);
+
+    if (previousName) {
+        output.querySelectorAll(".winner-name").forEach((node) => {
+            if (node.textContent?.trim() === previousName.trim()) {
+                node.textContent = resolvedName;
+            }
+        });
+    }
+}
+
+function updateHeroNameIfCoordsMatch(output, spot, resolvedName) {
+    const heroCard = output.querySelector(".result-card--hero");
+    if (!heroCard) return;
+
+    const coordEl = heroCard.querySelector(".coordinates");
+    if (!coordEl) return;
+
+    const expectedCoords = `${fmtCoord(spot.lat)}, ${fmtCoord(spot.lon)}`;
+    if (coordEl.textContent?.trim() !== expectedCoords) return;
+
+    const heading = heroCard.querySelector("h3");
+    if (heading) {
+        heading.textContent = resolvedName;
     }
 }
 
@@ -449,6 +538,8 @@ function renderBackToSpot(spot) {
     document.getElementById("recompareBtnBack")?.addEventListener("click", () => {
         onCompareClick(spot);
     });
+
+    resolveSpotName(spot, { updateHero: true });
 }
 
 function buildWinnerBanner(name, score, side) {

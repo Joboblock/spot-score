@@ -367,6 +367,26 @@ async function updateMarkerAddressFromLookup(marker, lat, lon) {
     if (!resolvedLabel || marker !== queryMarker) return;
 
     marker.setPopupContent(buildMarkerPopupHtml(resolvedLabel, lat, lon));
+    updateSpotNameInOutput(resolvedLabel, lat, lon);
+}
+
+function updateSpotNameInOutput(spotName, lat, lon) {
+    const output = document.getElementById("output");
+    if (!output) return;
+
+    const heroCard = output.querySelector(".result-card--hero");
+    if (!heroCard) return;
+
+    const coordEl = heroCard.querySelector(".coordinates");
+    if (!coordEl) return;
+
+    const expectedCoords = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+    if (coordEl.textContent?.trim() !== expectedCoords) return;
+
+    const heading = heroCard.querySelector("h3");
+    if (heading) {
+        heading.textContent = spotName;
+    }
 }
 
 function animateZoomToMaxAtSpot(lat, lon) {
