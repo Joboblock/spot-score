@@ -18,6 +18,8 @@ const DEFAULT_FOOTPRINT_MAX_POINTS = 12000;
 const DEFAULT_BUILDING_FOOTPRINT_MAX_POINTS = 1200;
 const GLTF_MATRIX_APPLY_MODE = "cesium-column-major";
 const ACCESSOR_CACHE = new WeakMap();
+const TILE_DATA_CACHE = new Map();
+const TILE_DATA_PROMISES = new Map();
 
 export async function loadNearbyBuildingData(lat, lon, options = {}) {
     const {
@@ -59,134 +61,20 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
     }
 
     const results = await Promise.all(
-        tileRequests.map(async (tileRequest) => {
-            const { tile, url, tileCenter, selectionDistanceMeters, tilesetEntry } = tileRequest;
-            try {
-                const response = await fetch(url);
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
-                }
-
-                const buffer = await response.arrayBuffer();
-                const header = parseB3dmHeader(buffer);
-                const featureTable = extractFeatureTableJson(buffer);
-                const gltf = extractGltfFromB3dm(buffer);
-                const validation = gltf ? validateGltfPayload(gltf) : null;
-                const tilesetCenter = tilesetEntry?.region
-                    ? getRegionCenter(tilesetEntry.region)
-                    : tileCenter;
-                const featureRtcCenter = getFeatureRtcCenter(featureTable);
-                const gltfRtcCenter = getGltfRtcCenter(gltf);
-                const rtcCenter = featureRtcCenter ?? gltfRtcCenter;
-                const modelMatrix = buildModelMatrix(
-                    {
-                        featureRtcCenter,
-                        gltfRtcCenter
-                    },
-                    tilesetEntry?.transform
-                );
-                const footprint = gltf && includeFootprints && tilesetCenter
-                    ? computeGltfFootprint(gltf, {
-                          modelMatrix,
-                          referenceCenter: tilesetCenter
-                      })
-                    : null;
-                const buildingFootprints = gltf && includeFootprints && tilesetCenter
-                    ? computeGltfBuildingFootprints(gltf, {
-                          modelMatrix,
-                          referenceCenter: tilesetCenter
-                      })
-                    : [];
-                const rayCheck = gltf && ray
-                    ? rayIntersectsGltf(gltf, ray, {
-                          ...rayOptions,
-                          modelMatrix
-                      })
-                    : null;
-
-                if (debug) {
-                    console.info("[b3dm] Loaded tile", {
-                        tile,
-                        sizeBytes: buffer.byteLength,
-                        header,
-                        gltf: gltf
-                            ? {
-                                  jsonByteLength: gltf.jsonByteLength,
-                                  binaryByteLength: gltf.binaryByteLength,
-                                  hasBinaryChunk: Boolean(gltf.binaryChunk),
-                                  parsedJson: Boolean(gltf.json),
-                                  validation
-                              }
-                            : null,
-                        rtcCenter,
-                        selectionDistanceMeters,
-                        footprint: footprint
-                            ? {
-                                  hullPointCount: footprint.hullPointCount,
-                                  sourcePointCount: footprint.sourcePointCount
-                              }
-                            : null,
-                        buildingFootprints: Array.isArray(buildingFootprints)
-                            ? buildingFootprints.length
-                            : 0,
-                        tileset: tilesetCenter
-                            ? {
-                                  centerLat: tilesetCenter.lat,
-                                  centerLon: tilesetCenter.lon,
-                                  centerHeight: tilesetCenter.height
-                              }
-                            : null
-                    });
-
-                    if (rayCheck) {
-                        console.info("[b3dm] Ray check", {
-                            tile,
-                            hit: rayCheck.hit,
-                            trianglesTested: rayCheck.trianglesTested,
-                            reason: rayCheck.reason
-                        });
-                    }
-
-                    if (!tilesetEntry) {
-                        console.info("[b3dm] No tileset mapping for tile", {
-                            tile,
-                            tilesetUrl
-                        });
-                    }
-                }
-
-                return {
-                    tile,
-                    buffer,
-                    header,
-                    featureTable,
-                    gltf,
-                    validation,
-                    rayCheck,
-                    tilesetEntry,
-                    tilesetCenter,
-                    rtcCenter,
-                    modelMatrix,
-                    selectionDistanceMeters,
-                    footprint,
-                    buildingFootprints,
-                    matrixApplyMode: GLTF_MATRIX_APPLY_MODE
-                };
-            } catch (error) {
-                if (debug) {
-                    console.warn("[b3dm] Failed to load tile", {
-                        tile,
-                        error: error instanceof Error ? error.message : String(error)
-                    });
-                }
-                return null;
-            }
-        })
+        tileRequests.map((tileRequest) =>
+            loadTileData(tileRequest, {
+                debug,
+                ray,
+                rayOptions,
+                includeFootprints,
+                tilesetUrl
+            })
+        )
     );
 
     const loaded = results.filter(Boolean);
     const debugSummary = {
-    selectionMode: "tileset-regions",
+        selectionMode: "tileset-regions",
         requested: tileRequests.length,
         loaded: loaded.length,
         requestedTiles: tileRequests.map((request) => ({
@@ -211,6 +99,211 @@ export async function loadNearbyBuildingData(lat, lon, options = {}) {
     });
 
     return loaded;
+}
+
+async function loadTileData(tileRequest, options) {
+    const { debug, ray, rayOptions, includeFootprints, tilesetUrl } = options;
+    const { tile, url, tileCenter, selectionDistanceMeters, tilesetEntry } = tileRequest;
+
+    let baseData = TILE_DATA_CACHE.get(url);
+
+    if (!baseData) {
+        let inflight = TILE_DATA_PROMISES.get(url);
+        if (!inflight) {
+            inflight = fetchTileData(tileRequest, { debug, includeFootprints, tilesetUrl });
+            TILE_DATA_PROMISES.set(url, inflight);
+        }
+
+        try {
+            baseData = await inflight;
+        } finally {
+            TILE_DATA_PROMISES.delete(url);
+        }
+
+        if (baseData) {
+            TILE_DATA_CACHE.set(url, baseData);
+        }
+    }
+
+    if (!baseData) {
+        return null;
+    }
+
+    if (!baseData.tilesetEntry && tilesetEntry) {
+        baseData.tilesetEntry = tilesetEntry;
+    }
+
+    const footprints = resolveTileFootprints(baseData, {
+        includeFootprints
+    });
+
+    const rayCheck = baseData.gltf && ray
+        ? rayIntersectsGltf(baseData.gltf, ray, {
+              ...rayOptions,
+              modelMatrix: baseData.modelMatrix
+          })
+        : null;
+
+    if (debug && rayCheck) {
+        console.info("[b3dm] Ray check", {
+            tile,
+            hit: rayCheck.hit,
+            trianglesTested: rayCheck.trianglesTested,
+            reason: rayCheck.reason
+        });
+    }
+
+    return {
+        ...baseData,
+        selectionDistanceMeters,
+        rayCheck,
+        footprint: footprints.footprint,
+        buildingFootprints: footprints.buildingFootprints
+    };
+}
+
+async function fetchTileData(tileRequest, options) {
+    const { debug, includeFootprints, tilesetUrl } = options;
+    const { tile, url, tileCenter, selectionDistanceMeters, tilesetEntry } = tileRequest;
+
+    try {
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        const buffer = await response.arrayBuffer();
+        const header = parseB3dmHeader(buffer);
+        const featureTable = extractFeatureTableJson(buffer);
+        const gltf = extractGltfFromB3dm(buffer);
+        const validation = gltf ? validateGltfPayload(gltf) : null;
+        const tilesetCenter = tilesetEntry?.region
+            ? getRegionCenter(tilesetEntry.region)
+            : tileCenter;
+        const featureRtcCenter = getFeatureRtcCenter(featureTable);
+        const gltfRtcCenter = getGltfRtcCenter(gltf);
+        const rtcCenter = featureRtcCenter ?? gltfRtcCenter;
+        const modelMatrix = buildModelMatrix(
+            {
+                featureRtcCenter,
+                gltfRtcCenter
+            },
+            tilesetEntry?.transform
+        );
+        const baseData = {
+            tile,
+            buffer,
+            header,
+            featureTable,
+            gltf,
+            validation,
+            tilesetEntry,
+            tilesetCenter,
+            rtcCenter,
+            modelMatrix,
+            matrixApplyMode: GLTF_MATRIX_APPLY_MODE,
+            footprint: null,
+            buildingFootprints: [],
+            footprintsComputed: false
+        };
+
+        if (includeFootprints) {
+            const footprints = resolveTileFootprints(baseData, { includeFootprints });
+            baseData.footprint = footprints.footprint;
+            baseData.buildingFootprints = footprints.buildingFootprints;
+        }
+
+        if (debug) {
+            console.info("[b3dm] Loaded tile", {
+                tile,
+                sizeBytes: buffer.byteLength,
+                header,
+                gltf: gltf
+                    ? {
+                          jsonByteLength: gltf.jsonByteLength,
+                          binaryByteLength: gltf.binaryByteLength,
+                          hasBinaryChunk: Boolean(gltf.binaryChunk),
+                          parsedJson: Boolean(gltf.json),
+                          validation
+                      }
+                    : null,
+                rtcCenter,
+                selectionDistanceMeters,
+                footprint: baseData.footprint
+                    ? {
+                          hullPointCount: baseData.footprint.hullPointCount,
+                          sourcePointCount: baseData.footprint.sourcePointCount
+                      }
+                    : null,
+                buildingFootprints: Array.isArray(baseData.buildingFootprints)
+                    ? baseData.buildingFootprints.length
+                    : 0,
+                tileset: tilesetCenter
+                    ? {
+                          centerLat: tilesetCenter.lat,
+                          centerLon: tilesetCenter.lon,
+                          centerHeight: tilesetCenter.height
+                      }
+                    : null
+            });
+
+            if (!tilesetEntry) {
+                console.info("[b3dm] No tileset mapping for tile", {
+                    tile,
+                    tilesetUrl
+                });
+            }
+        }
+
+        return baseData;
+    } catch (error) {
+        if (debug) {
+            console.warn("[b3dm] Failed to load tile", {
+                tile,
+                error: error instanceof Error ? error.message : String(error)
+            });
+        }
+        return null;
+    }
+}
+
+function resolveTileFootprints(tileData, options = {}) {
+    const includeFootprints = Boolean(options.includeFootprints);
+    if (!includeFootprints) {
+        return { footprint: null, buildingFootprints: [] };
+    }
+
+    if (tileData.footprintsComputed) {
+        return {
+            footprint: tileData.footprint,
+            buildingFootprints: tileData.buildingFootprints
+        };
+    }
+
+    tileData.footprintsComputed = true;
+
+    if (!tileData.gltf || !tileData.tilesetCenter) {
+        tileData.footprint = null;
+        tileData.buildingFootprints = [];
+        return {
+            footprint: null,
+            buildingFootprints: []
+        };
+    }
+
+    tileData.footprint = computeGltfFootprint(tileData.gltf, {
+        modelMatrix: tileData.modelMatrix,
+        referenceCenter: tileData.tilesetCenter
+    });
+    tileData.buildingFootprints = computeGltfBuildingFootprints(tileData.gltf, {
+        modelMatrix: tileData.modelMatrix,
+        referenceCenter: tileData.tilesetCenter
+    });
+
+    return {
+        footprint: tileData.footprint,
+        buildingFootprints: tileData.buildingFootprints
+    };
 }
 
 export async function loadTilesetIndex(tilesetUrl = DEFAULT_TILESET_URL, debug = false) {
