@@ -21,6 +21,9 @@ const ADDRESS_SEARCH_MIN_CHARS = 3;
 const ADDRESS_SEARCH_LIMIT = 5;
 const ADDRESS_SEARCH_DEBOUNCE_MS = 250;
 const SPOT_HEIGHT_METERS = 1.7;
+const URL_PARAM_SPOT = "spot";
+const URL_PARAM_SPOT_1 = "spot1";
+const URL_PARAM_SPOT_2 = "spot2";
 const HAMBURG_BOUNDS = [
     [53.41062884725186, 9.732240484945219],
     [53.72838568700598, 10.29272015751267]
@@ -31,6 +34,7 @@ let usedStationsLayer;
 let buildingTileFootprintsLayer;
 let addressSearchAbortController;
 let addressSearchTimeout;
+let compareModeActive = false;
 
 document.addEventListener("DOMContentLoaded", () => {
     hideOutput();
@@ -39,6 +43,7 @@ document.addEventListener("DOMContentLoaded", () => {
     preloadNoiseData(HAMBURG_BOUNDS).catch(() => null);
 
     initMap();
+    applyInitialSpotFromUrl();
 });
 
 function initMap() {
@@ -235,6 +240,58 @@ function parseCoordinatesFromInput(rawText) {
     return { lat, lon };
 }
 
+function parseSpotParam(paramValue) {
+    if (!paramValue) return null;
+    const parsed = parseCoordinatesFromInput(paramValue);
+    if (!parsed) return null;
+    if (!isValidCoordinates(parsed.lat, parsed.lon)) return null;
+    if (!isWithinBounds(parsed.lat, parsed.lon)) return null;
+    return parsed;
+}
+
+function formatSpotParam(lat, lon) {
+    return `${lat.toFixed(5)},${lon.toFixed(5)}`;
+}
+
+function getUrlSpots() {
+    const params = new URLSearchParams(window.location.search);
+    const spot = parseSpotParam(params.get(URL_PARAM_SPOT));
+    const spot1 = parseSpotParam(params.get(URL_PARAM_SPOT_1));
+    const spot2 = parseSpotParam(params.get(URL_PARAM_SPOT_2));
+
+    const singleSpot = spot ?? (spot1 && !spot2 ? spot1 : null);
+
+    return {
+        spot: singleSpot,
+        spot1,
+        spot2,
+        hasCompare: Boolean(spot1 && spot2)
+    };
+}
+
+function updateUrlWithSpots({ spot = null, spot1 = null, spot2 = null } = {}) {
+    const params = new URLSearchParams(window.location.search);
+    [URL_PARAM_SPOT, URL_PARAM_SPOT_1, URL_PARAM_SPOT_2].forEach((param) => params.delete(param));
+
+    if (spot1 && spot2) {
+        params.set(URL_PARAM_SPOT_1, formatSpotParam(spot1.lat, spot1.lon));
+        params.set(URL_PARAM_SPOT_2, formatSpotParam(spot2.lat, spot2.lon));
+    } else if (spot) {
+        params.set(URL_PARAM_SPOT, formatSpotParam(spot.lat, spot.lon));
+    }
+
+    const queryString = params.toString();
+    const nextUrl = `${window.location.pathname}${queryString ? `?${queryString}` : ""}${window.location.hash}`;
+    window.history.replaceState({}, "", nextUrl);
+}
+
+function applyInitialSpotFromUrl() {
+    if (!window?.location) return;
+    const { spot, hasCompare } = getUrlSpots();
+    if (hasCompare || !spot) return;
+    handlePointSelection(spot.lat, spot.lon, { zoomToMax: true, skipUrlUpdate: true });
+}
+
 function attemptCoordinateFallback(rawInput, resultsList) {
     const parsedCoordinates = parseCoordinatesFromInput(rawInput);
 
@@ -258,7 +315,7 @@ function attemptCoordinateFallback(rawInput, resultsList) {
 async function handlePointSelection(lat, lon, options = {}) {
     if (!map) return;
 
-    const { zoomToMax = false, addressLabel = null } = options;
+    const { zoomToMax = false, addressLabel = null, skipUrlUpdate = false } = options;
 
     if (!isWithinBounds(lat, lon)) {
         renderQueryError("Selected coordinates are outside the configured Hamburg bounds.");
@@ -266,6 +323,10 @@ async function handlePointSelection(lat, lon, options = {}) {
     }
 
     hideAppHeader();
+
+    if (!skipUrlUpdate && !compareModeActive) {
+        updateUrlWithSpots({ spot: { lat, lon } });
+    }
 
     const exposureNow = new Date();
     const sunDirection = computeSunDirection(lat, lon, exposureNow);
@@ -329,7 +390,12 @@ async function handlePointSelection(lat, lon, options = {}) {
 }
 
 window.__spotScoreApp = {
-    handlePointSelection
+    handlePointSelection,
+    updateUrlWithSpots,
+    getUrlSpots,
+    setCompareMode: (value) => {
+        compareModeActive = Boolean(value);
+    }
 };
 
 function placeQueryMarker(lat, lon, options = {}) {

@@ -4,17 +4,34 @@ const path = require("path");
 
 const PORT = 8800;
 
+function getRequestPath(requestUrl) {
+    const url = new URL(requestUrl, "http://localhost");
+    return decodeURIComponent(url.pathname);
+}
+
+function resolveFilePath(requestedPath, srcRoot, repoRoot) {
+    const sanitizedPath = requestedPath === "/" ? "/index.html" : requestedPath;
+    const normalizedPath = sanitizedPath.replace(/^[\/]+/, "");
+    let filePath = path.join(srcRoot, normalizedPath || "index.html");
+
+    if (!fs.existsSync(filePath)) {
+        filePath = path.join(repoRoot, normalizedPath || "index.html");
+    }
+
+    if (!fs.existsSync(filePath) && !path.extname(normalizedPath)) {
+        filePath = path.join(srcRoot, "index.html");
+    }
+
+    return filePath;
+}
+
 // Simple static file server
 const server = http.createServer((req, res) => {
-    const sanitizedPath = decodeURIComponent(req.url === "/" ? "/index.html" : req.url);
-    const requestedPath = sanitizedPath.replace(/^[\/]+/, "");
     const srcRoot = path.join(process.cwd(), "src");
     const repoRoot = process.cwd();
+    const requestPath = getRequestPath(req.url || "/");
 
-    let filePath = path.join(srcRoot, requestedPath || "index.html");
-    if (!fs.existsSync(filePath)) {
-        filePath = path.join(repoRoot, requestedPath);
-    }
+    const filePath = resolveFilePath(requestPath, srcRoot, repoRoot);
 
     const ext = path.extname(filePath);
     let contentType = "text/html";
@@ -34,8 +51,15 @@ const server = http.createServer((req, res) => {
     });
 });
 
-// Start server
-server.listen(PORT, () => {
-    const url = `http://localhost:${PORT}`;
-    console.log(`Server running at ${url}`);
-});
+if (require.main === module) {
+    // Start server
+    server.listen(PORT, () => {
+        const url = `http://localhost:${PORT}`;
+        console.log(`Server running at ${url}`);
+    });
+}
+
+module.exports = {
+    getRequestPath,
+    resolveFilePath
+};

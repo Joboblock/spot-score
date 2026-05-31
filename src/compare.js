@@ -38,6 +38,7 @@ const PLACEHOLDER_SPOT_NAMES = new Set(["Selected spot", "Challenger spot", "Loa
 document.addEventListener("DOMContentLoaded", () => {
     watchOutputForSpotResults();
     interceptMapClicks();
+    bootstrapFromUrl();
 });
 
 // ─── MutationObserver: detect when a single-spot result is rendered ───────────
@@ -216,9 +217,9 @@ async function onCompareClick(spot) {
     const currentHeroName = resultStack?.querySelector(".result-card--hero h3")?.textContent?.trim();
 
     pinnedSpot = { ...spot, name: currentHeroName || spot.name, scores };
-    isCompareMode = true;
+    setCompareModeState(true);
 
-    resolveSpotName(pinnedSpot, { side: "a" });
+    resolveSpotName(pinnedSpot, { side: "1" });
 
     // Show instruction in output
     output.innerHTML = `<section class="result-card"><p class="loading">📍Current Spot: "${spot.name}".<br><br>Now click anywhere on the map to select Spot to compare.</p></section>`;
@@ -227,7 +228,7 @@ async function onCompareClick(spot) {
 
 function exitCompareMode() {
     pinnedSpot = null;
-    isCompareMode = false;
+    setCompareModeState(false);
 
     // Remove compare marker if one was placed
     const mapEl = document.getElementById("map");
@@ -238,49 +239,49 @@ function exitCompareMode() {
 
 // ─── Comparison render ────────────────────────────────────────────────────────
 
-function renderComparisonResults(spotA, spotB) {
+function renderComparisonResults(spot1, spot2) {
     const output = document.getElementById("output");
     if (!output) return;
 
     exitCompareMode();
 
     const metrics = Object.keys(SCORE_LABELS);
-    let aWinCount = 0;
-    let bWinCount = 0;
+    let spot1WinCount = 0;
+    let spot2WinCount = 0;
 
     const metricRows = metrics.map((key) => {
-        const aVal = spotA.scores[key];
-        const bVal = spotB.scores[key];
-        let aClass = ""; let bClass = "";
+        const spot1Value = spot1.scores[key];
+        const spot2Value = spot2.scores[key];
+        let spot1Class = ""; let spot2Class = "";
 
-        if (Number.isFinite(aVal) && Number.isFinite(bVal)) {
-            if (aVal > bVal)      { aClass = "compare-cell--win"; aWinCount++; }
-            else if (bVal > aVal) { bClass = "compare-cell--win"; bWinCount++; }
-            else                  { aClass = bClass = "compare-cell--tie"; }
+        if (Number.isFinite(spot1Value) && Number.isFinite(spot2Value)) {
+            if (spot1Value > spot2Value)      { spot1Class = "compare-cell--win"; spot1WinCount++; }
+            else if (spot2Value > spot1Value) { spot2Class = "compare-cell--win"; spot2WinCount++; }
+            else                              { spot1Class = spot2Class = "compare-cell--tie"; }
         }
 
         return `<tr>
             <td class="compare-cell compare-cell--metric">${SCORE_LABELS[key]}</td>
-            <td class="compare-cell compare-cell--a ${aClass}">${fmt(aVal)}</td>
-            <td class="compare-cell compare-cell--b ${bClass}">${fmt(bVal)}</td>
+            <td class="compare-cell compare-cell--1 ${spot1Class}">${fmt(spot1Value)}</td>
+            <td class="compare-cell compare-cell--2 ${spot2Class}">${fmt(spot2Value)}</td>
         </tr>`;
     }).join("");
 
-    const aG = spotA.scores.general;
-    const bG = spotB.scores.general;
-    let aGClass = ""; let bGClass = "";
+    const spot1General = spot1.scores.general;
+    const spot2General = spot2.scores.general;
+    let spot1GeneralClass = ""; let spot2GeneralClass = "";
     let winnerBanner = "";
 
-    if (Number.isFinite(aG) && Number.isFinite(bG)) {
-        if (aG > bG) {
-            aGClass = "compare-cell--win";
-            winnerBanner = buildWinnerBanner(spotA.name, aG, "a");
-        } else if (bG > aG) {
-            bGClass = "compare-cell--win";
-            winnerBanner = buildWinnerBanner(spotB.name, bG, "b");
+    if (Number.isFinite(spot1General) && Number.isFinite(spot2General)) {
+        if (spot1General > spot2General) {
+            spot1GeneralClass = "compare-cell--win";
+            winnerBanner = buildWinnerBanner(spot1.name, spot1General, "1");
+        } else if (spot2General > spot1General) {
+            spot2GeneralClass = "compare-cell--win";
+            winnerBanner = buildWinnerBanner(spot2.name, spot2General, "2");
         } else {
-            aGClass = bGClass = "compare-cell--tie";
-            winnerBanner = `<div class="winner-banner winner-banner--tie"><span class="winner-trophy">🤝</span><p class="winner-label">It's a tie!</p><p class="winner-score">${fmt(aG)} / 10</p></div>`;
+            spot1GeneralClass = spot2GeneralClass = "compare-cell--tie";
+            winnerBanner = `<div class="winner-banner winner-banner--tie"><span class="winner-trophy">🤝</span><p class="winner-label">It's a tie!</p><p class="winner-score">${fmt(spot1General)} / 10</p></div>`;
         }
     }
 
@@ -289,7 +290,7 @@ function renderComparisonResults(spotA, spotB) {
             <section class="result-card result-card--hero">
                 <div class="hero-meta">
                     <span class="pill">Spot comparison</span>
-                    <span class="pill pill--accent">${aWinCount} – ${bWinCount} categories</span>
+                    <span class="pill pill--accent">${spot1WinCount} – ${spot2WinCount} categories</span>
                 </div>
                 <h3>Head-to-head</h3>
             </section>
@@ -299,25 +300,25 @@ function renderComparisonResults(spotA, spotB) {
             <section class="result-card compare-card">
                 <div class="compare-header">
                     <div class="compare-header__metric"></div>
-                    <div class="compare-header__spot compare-header__spot--a">
-                        ${renderSpotName(spotA, "a")}
+                    <div class="compare-header__spot compare-header__spot--1">
+                        ${renderSpotName(spot1, "1")}
                     </div>
-                    <div class="compare-header__spot compare-header__spot--b">
-                        ${renderSpotName(spotB, "b")}
+                    <div class="compare-header__spot compare-header__spot--2">
+                        ${renderSpotName(spot2, "2")}
                     </div>
                 </div>
                 <table class="compare-table">
                     <colgroup>
                         <col class="compare-col compare-col--metric" />
-                        <col class="compare-col compare-col--a" />
-                        <col class="compare-col compare-col--b" />
+                        <col class="compare-col compare-col--1" />
+                        <col class="compare-col compare-col--2" />
                     </colgroup>
                     <tbody>
                         ${metricRows}
                         <tr class="compare-row--total">
                             <td class="compare-cell compare-cell--metric">Overall</td>
-                            <td class="compare-cell compare-cell--a ${aGClass}">${fmt(aG)}</td>
-                            <td class="compare-cell compare-cell--b ${bGClass}">${fmt(bG)}</td>
+                            <td class="compare-cell compare-cell--1 ${spot1GeneralClass}">${fmt(spot1General)}</td>
+                            <td class="compare-cell compare-cell--2 ${spot2GeneralClass}">${fmt(spot2General)}</td>
                         </tr>
                     </tbody>
                 </table>
@@ -332,19 +333,21 @@ function renderComparisonResults(spotA, spotB) {
     output.classList.remove("is-hidden");
 
     document.getElementById("compareAgainBtn")?.addEventListener("click", () => {
-        onCompareClick(spotA);
+        onCompareClick(spot1);
     });
 
     output.querySelectorAll(".compare-spot-button").forEach((button) => {
         button.addEventListener("click", () => {
             const side = button.getAttribute("data-spot");
-            const targetSpot = side === "b" ? spotB : spotA;
+            const targetSpot = side === "2" ? spot2 : spot1;
             triggerSpotSelection(targetSpot);
         });
     });
 
-    resolveSpotName(spotA, { side: "a" });
-    resolveSpotName(spotB, { side: "b" });
+    resolveSpotName(spot1, { side: "1" });
+    resolveSpotName(spot2, { side: "2" });
+
+    window.__spotScoreApp?.updateUrlWithSpots?.({ spot1, spot2 });
 }
 
 function renderSpotName(spot, side) {
@@ -364,8 +367,65 @@ function renderSpotName(spot, side) {
 function triggerSpotSelection(spot) {
     if (!spot || !Number.isFinite(spot.lat) || !Number.isFinite(spot.lon)) return;
     if (window.__spotScoreApp?.handlePointSelection) {
-        window.__spotScoreApp.handlePointSelection(spot.lat, spot.lon);
+        const options = isCompareMode ? { skipUrlUpdate: true } : undefined;
+        window.__spotScoreApp.handlePointSelection(spot.lat, spot.lon, options);
     }
+}
+
+function setCompareModeState(isActive) {
+    isCompareMode = Boolean(isActive);
+    window.__spotScoreApp?.setCompareMode?.(isCompareMode);
+}
+
+function bootstrapFromUrl() {
+    const urlSpots = window.__spotScoreApp?.getUrlSpots?.();
+    if (!urlSpots?.hasCompare) return;
+
+    const { spot1, spot2 } = urlSpots;
+    if (!spot1 || !spot2) return;
+
+    waitForSpotScoreApp().then(() => {
+        startCompareWithSpots(spot1, spot2);
+    });
+}
+
+function waitForSpotScoreApp() {
+    if (window.__spotScoreApp?.handlePointSelection) {
+        return Promise.resolve();
+    }
+
+    return new Promise((resolve) => {
+        const poll = setInterval(() => {
+            if (window.__spotScoreApp?.handlePointSelection) {
+                clearInterval(poll);
+                resolve();
+            }
+        }, 50);
+    });
+}
+
+async function startCompareWithSpots(spot1, spot2) {
+    if (!window.__spotScoreApp?.handlePointSelection) return;
+
+    await window.__spotScoreApp.handlePointSelection(spot1.lat, spot1.lon, {
+        zoomToMax: true,
+        skipUrlUpdate: true
+    });
+
+    const spotForCompare = lastKnownSpot ?? {
+        lat: spot1.lat,
+        lon: spot1.lon,
+        name: "Selected spot"
+    };
+
+    onCompareClick(spotForCompare);
+
+    const output = document.getElementById("output");
+    if (output) {
+        waitForChallengerResult(output);
+    }
+
+    window.__spotScoreApp.handlePointSelection(spot2.lat, spot2.lon, { skipUrlUpdate: true });
 }
 
 function shouldResolveSpotName(name) {
