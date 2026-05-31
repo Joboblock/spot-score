@@ -229,7 +229,8 @@ async function onCompareClick(spot) {
     // We still need the full score object — read it from current DOM
     const output = document.getElementById("output");
     const resultStack = output?.querySelector(".result-stack");
-    const scores = resultStack ? readScoresFromDOM(resultStack) : {};
+    const existingScores = spot?.scores && Object.keys(spot.scores).length ? spot.scores : null;
+    const scores = existingScores ?? (resultStack ? readScoresFromDOM(resultStack) : {});
 
     pinnedSpot = { ...spot, scores };
     isCompareMode = true;
