@@ -323,17 +323,18 @@ function renderComparisonResults(spotA, spotB) {
                 <div class="compare-header">
                     <div class="compare-header__metric"></div>
                     <div class="compare-header__spot compare-header__spot--a">
-                        <span class="compare-spot-label">Spot A</span>
-                        <strong class="compare-spot-name">${spotA.name}</strong>
-                        <span class="compare-spot-coords">${fmtCoord(spotA.lat)}, ${fmtCoord(spotA.lon)}</span>
+                        ${renderSpotName(spotA.name)}
                     </div>
                     <div class="compare-header__spot compare-header__spot--b">
-                        <span class="compare-spot-label">Spot B</span>
-                        <strong class="compare-spot-name">${spotB.name}</strong>
-                        <span class="compare-spot-coords">${fmtCoord(spotB.lat)}, ${fmtCoord(spotB.lon)}</span>
+                        ${renderSpotName(spotB.name)}
                     </div>
                 </div>
                 <table class="compare-table">
+                    <colgroup>
+                        <col class="compare-col compare-col--metric" />
+                        <col class="compare-col compare-col--a" />
+                        <col class="compare-col compare-col--b" />
+                    </colgroup>
                     <tbody>
                         ${metricRows}
                         <tr class="compare-row--total">
@@ -363,6 +364,16 @@ function renderComparisonResults(spotA, spotB) {
         // We do this by dispatching a synthetic leaflet-style reload
         reloadSpot(spotA);
     });
+}
+
+function renderSpotName(name) {
+    const trimmedName = (name ?? "").trim();
+    const label = trimmedName || "Spot";
+    const isSingleWord = label && !/\s/.test(label);
+    const className = isSingleWord
+        ? "compare-spot-name compare-spot-name--truncate"
+        : "compare-spot-name";
+    return `<strong class="${className}">${label}</strong>`;
 }
 
 function reloadSpot(spot) {
