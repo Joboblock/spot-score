@@ -344,7 +344,7 @@ button {
 }
 
 button:hover {
-    background: var(--color-forest-hover);
+    background: var(--color-lime-hover);
     transform: translateY(-1px);
 }
 
@@ -908,6 +908,7 @@ button:focus-visible,
     gap: 2px;
     padding: 12px;
     border-left: 1px solid var(--border-dark);
+    min-width: 0;
     overflow-wrap: anywhere;
     word-break: break-word;
 }
@@ -942,6 +943,29 @@ button:focus-visible,
     white-space: nowrap;
     text-overflow: ellipsis;
     overflow: hidden;
+}
+
+.compare-spot-button {
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 0;
+    text-align: left;
+    cursor: pointer;
+    width: 100%;
+    min-width: 0;
+    display: block;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    font: inherit;
+    border-radius: 10px;
+    box-shadow: none;
+}
+
+.compare-spot-button:hover .compare-spot-name,
+.compare-spot-button:focus-visible .compare-spot-name {
+    text-decoration: underline;
 }
 
 .compare-spot-coords {
@@ -1007,7 +1031,7 @@ button:focus-visible,
 /* Compare Action Buttons */
 .compare-actions {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr;
     gap: 10px;
 }
 

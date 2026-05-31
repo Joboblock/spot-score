@@ -328,6 +328,10 @@ async function handlePointSelection(lat, lon, options = {}) {
     }
 }
 
+window.__spotScoreApp = {
+    handlePointSelection
+};
+
 function placeQueryMarker(lat, lon, options = {}) {
     if (!map) return;
 

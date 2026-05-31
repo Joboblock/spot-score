@@ -323,10 +323,10 @@ function renderComparisonResults(spotA, spotB) {
                 <div class="compare-header">
                     <div class="compare-header__metric"></div>
                     <div class="compare-header__spot compare-header__spot--a">
-                        ${renderSpotName(spotA.name)}
+                        ${renderSpotName(spotA, "a")}
                     </div>
                     <div class="compare-header__spot compare-header__spot--b">
-                        ${renderSpotName(spotB.name)}
+                        ${renderSpotName(spotB, "b")}
                     </div>
                 </div>
                 <table class="compare-table">
@@ -348,7 +348,6 @@ function renderComparisonResults(spotA, spotB) {
 
             <div class="compare-actions">
                 <button type="button" id="compareAgainBtn" class="btn-secondary">Compare again</button>
-                <button type="button" id="backToABtn">Back to Spot A</button>
             </div>
         </div>
     `;
@@ -359,21 +358,34 @@ function renderComparisonResults(spotA, spotB) {
         onCompareClick(spotA);
     });
 
-    document.getElementById("backToABtn")?.addEventListener("click", () => {
-        // Re-trigger a map click at Spot A's coordinates to restore the view
-        // We do this by dispatching a synthetic leaflet-style reload
-        reloadSpot(spotA);
+    output.querySelectorAll(".compare-spot-button").forEach((button) => {
+        button.addEventListener("click", () => {
+            const side = button.getAttribute("data-spot");
+            const targetSpot = side === "b" ? spotB : spotA;
+            triggerSpotSelection(targetSpot);
+        });
     });
 }
 
-function renderSpotName(name) {
-    const trimmedName = (name ?? "").trim();
+function renderSpotName(spot, side) {
+    const trimmedName = (spot?.name ?? "").trim();
     const label = trimmedName || "Spot";
     const isSingleWord = label && !/\s/.test(label);
     const className = isSingleWord
         ? "compare-spot-name compare-spot-name--truncate"
         : "compare-spot-name";
-    return `<strong class="${className}">${label}</strong>`;
+    return `
+        <button type="button" class="compare-spot-button" data-spot="${side}" aria-label="View ${label}">
+            <strong class="${className}">${label}</strong>
+        </button>
+    `;
+}
+
+function triggerSpotSelection(spot) {
+    if (!spot || !Number.isFinite(spot.lat) || !Number.isFinite(spot.lon)) return;
+    if (window.__spotScoreApp?.handlePointSelection) {
+        window.__spotScoreApp.handlePointSelection(spot.lat, spot.lon);
+    }
 }
 
 function reloadSpot(spot) {
