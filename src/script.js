@@ -376,10 +376,15 @@ async function handlePointSelection(lat, lon, options = {}) {
         renderPointResults(
             lat,
             lon,
-            noiseInfo,
-            weatherSelection,
+            noiseInfo ?? { klasse: null, distanceKm: null },
+            weatherSelection ?? {
+                usedStations: [],
+                totalStationsUsed: 0,
+                metricStationCounts: {},
+                combined: {}
+            },
             cityTemperatureStats,
-            airQualityInfo,
+            airQualityInfo ?? { pm10: null, pm25: null, usedSensors: 0, nearestDistanceKm: null },
             buildingData
         );
     } catch (error) {
@@ -647,8 +652,6 @@ function renderPointResults(
     const metricStationCounts = weatherSelection?.metricStationCounts ?? {};
     const combined = weatherSelection?.combined ?? {};
     const airQuality = airQualityInfo ?? {};
-    const spotScores = buildSpotScores(noiseInfo, combined, cityTemperatureStats, airQuality);
-    const generalScoreText = formatScore(spotScores.general);
     const exposureNow = new Date();
     const sunExposure = computeSunExposure(lat, lon, exposureNow, { lookAheadHours: 12, stepMinutes: 5 });
     const sunlitStatus = evaluateSunlitStatus(lat, lon, exposureNow, buildingData, true);
@@ -676,6 +679,8 @@ function renderPointResults(
         sunlitStatus,
         { lookAheadHours: 12, stepMinutes: 10 }
     );
+    const spotScores = buildSpotScores(noiseInfo, combined, cityTemperatureStats, airQuality);
+    const generalScoreText = formatScore(spotScores.general);
     const sunStartText = sunStartForecast.minutesUntilStart === null
         ? "n/a"
         : sunStartForecast.minutesUntilStart === 0
@@ -990,6 +995,11 @@ function formatDistance(value) {
 function formatScore(value) {
     if (!Number.isFinite(value)) return "n/a";
     return value.toFixed(1);
+}
+
+function formatPercent(value) {
+    if (!Number.isFinite(value)) return "n/a";
+    return `${Math.round(value)}%`;
 }
 
 function formatDurationMinutes(minutes) {
@@ -1322,7 +1332,7 @@ function findNextSunlitTime(lat, lon, now, buildingData, currentStatus, options 
 
     for (let elapsed = stepMinutes; elapsed <= maxMinutes; elapsed += stepMinutes) {
         const candidate = new Date(now.getTime() + elapsed * 60000);
-    const status = evaluateSunlitStatus(lat, lon, candidate, buildingData);
+        const status = evaluateSunlitStatus(lat, lon, candidate, buildingData);
 
         if (status.isSunlit && !previousSunlit) {
             return {

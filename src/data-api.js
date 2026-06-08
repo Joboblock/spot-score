@@ -71,8 +71,8 @@ export async function fetchWeatherStationsWithinRadius(lat, lon, radiusKm = NETA
 
 export async function fetchPointSelectionData(lat, lon, hamburgBounds) {
     const [noiseInfo, weatherSelection, cityTemperatureStats, airQualityInfo] = await Promise.all([
-        fetchNoiseInfoForPoint(lat, lon, hamburgBounds),
-        buildWeatherSelectionForPoint(lat, lon),
+        fetchNoiseInfoForPoint(lat, lon, hamburgBounds).catch(() => null),
+        buildWeatherSelectionForPoint(lat, lon).catch(() => null),
         fetchAverageCityTemperature(hamburgBounds).catch(() => null),
         fetchAirQualityForPoint(lat, lon).catch(() => null)
     ]);
