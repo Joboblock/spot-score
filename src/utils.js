@@ -1,4 +1,4 @@
-const SCORE_MIN = 0.1;
+const SCORE_MIN = 0.0;
 const SCORE_MAX = 10;
 export const TEMP_OPTIMAL_C = 25;
 const TEMP_TOLERANCE_C = 12;
@@ -16,10 +16,10 @@ const NOISE_BUCKETS = [
 	{ min: 60, max: 65, score: 7.5 },
 	{ min: 65, max: 70, score: 5 },
 	{ min: 70, max: 75, score: 2.5 },
-	{ min: 75, max: Infinity, score: 0.1 }
+	{ min: 75, max: Infinity, score: 0.0 }
 ];
 
-export function buildSpotScores(noiseInfo, weatherCombined, cityTemperatureStats, airQualityInfo) {
+export function buildSpotScores(noiseInfo, weatherCombined, cityTemperatureStats, airQualityInfo, sunScore = null) {
 	const temperature = scoreTemperature(weatherCombined?.temperature, cityTemperatureStats);
 	const humidity = scoreHumidity(weatherCombined?.humidity, weatherCombined?.temperature);
 
@@ -29,7 +29,8 @@ export function buildSpotScores(noiseInfo, weatherCombined, cityTemperatureStats
 		temperature,
 		humidity,
 		wind: scoreWind(weatherCombined?.windStrength, weatherCombined?.temperature),
-		rain: scoreRain(weatherCombined?.rain24h)
+		rain: scoreRain(weatherCombined?.rain24h),
+		sun: Number.isFinite(sunScore) ? roundToOneDecimal(clamp(sunScore, SCORE_MIN, SCORE_MAX)) : null
 	};
 
 	const numericScores = Object.values(scores).filter(Number.isFinite);

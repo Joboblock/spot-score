@@ -663,6 +663,11 @@ function renderPointResults(
             ? "In sun"
             : "In shade";
     const exposureAltitudeText = formatValue(sunExposure.altitudeDeg, "°");
+    const sunExposurePercentage = calculateSunExposurePercentage(lat, lon, exposureNow, buildingData, 2);
+    const sunExposurePercentageText = Number.isFinite(sunExposurePercentage)
+        ? `${sunExposurePercentage}%`
+        : "n/a";
+    const sunScore = calculateSunScore(sunExposurePercentage);
     const exposureDurationText = sunExposure.minutesUntilChange === null
         ? "n/a"
         : sunExposure.nextChangeTime
@@ -679,7 +684,7 @@ function renderPointResults(
         sunlitStatus,
         { lookAheadHours: 12, stepMinutes: 10 }
     );
-    const spotScores = buildSpotScores(noiseInfo, combined, cityTemperatureStats, airQuality);
+    const spotScores = buildSpotScores(noiseInfo, combined, cityTemperatureStats, airQuality, sunScore);
     const generalScoreText = formatScore(spotScores.general);
     const sunStartText = sunStartForecast.minutesUntilStart === null
         ? "n/a"
@@ -873,6 +878,7 @@ function renderPointResults(
                     <ul class="stat-list">
                         <li><strong>Current status</strong><span>${exposureStatus}</span></li>
                         <li><strong>Sun altitude</strong><span>${exposureAltitudeText}</span></li>
+                        <li><strong>Sun exposure (next 2h)</strong><span>${sunExposurePercentageText}</span></li>
                         <li><strong>Time until sun exposure starts</strong><span>${sunStartText}</span></li>
                         <li><strong>Exposure start</strong><span>${sunStartLabel}</span></li>
                         <li><strong>Time until change</strong><span>${exposureDurationText}</span></li>
@@ -918,6 +924,7 @@ function renderPointResults(
                         <li><strong>Temperature</strong><span class="score-value">${formatScore(spotScores.temperature)}</span></li>
                         <li><strong>Humidity</strong><span class="score-value">${formatScore(spotScores.humidity)}</span></li>
                         <li><strong>Wind</strong><span class="score-value">${formatScore(spotScores.wind)}</span></li>
+                        <li><strong>Sun</strong><span class="score-value">${formatScore(spotScores.sun)}</span></li>
                         <li><strong>Rain</strong><span class="score-value">${formatScore(spotScores.rain)}</span></li>
                     </ul>
                 </div>
@@ -1350,4 +1357,36 @@ function findNextSunlitTime(lat, lon, now, buildingData, currentStatus, options 
         nextTime: null,
         reason: `No sun exposure change in next ${lookAheadHours}h`
     };
+}
+
+function calculateSunExposurePercentage(lat, lon, now, buildingData, lookAheadHours = 2) {
+    const stepMinutes = 5;
+    const maxMinutes = Math.max(0, lookAheadHours * 60);
+    let sunlitCount = 0;
+    let validSamples = 0;
+
+    for (let elapsed = 0; elapsed <= maxMinutes; elapsed += stepMinutes) {
+        const candidate = new Date(now.getTime() + elapsed * 60000);
+        const status = evaluateSunlitStatus(lat, lon, candidate, buildingData);
+
+        if (status.isSunlit === true) {
+            sunlitCount++;
+            validSamples++;
+            continue;
+        }
+
+        if (status.isSunlit === false) {
+            validSamples++;
+        }
+    }
+
+    if (validSamples === 0) {
+        return null;
+    }
+
+    return Math.round((sunlitCount / validSamples) * 100);
+}
+
+function calculateSunScore(p) {
+    return Number.isFinite(p) ? Math.round(p) / 10 : null;
 }

@@ -22,6 +22,7 @@ const SCORE_LABELS = {
     temperature: "Temperature",
     humidity: "Humidity",
     wind: "Wind",
+    sun: "Sun",
     rain: "Rain"
 };
 
@@ -184,6 +185,7 @@ function readScoresFromDOM(resultStack) {
         "Temperature": "temperature",
         "Humidity": "humidity",
         "Wind": "wind",
+        "Sun": "sun",
         "Rain": "rain"
     };
 
