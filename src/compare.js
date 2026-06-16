@@ -245,9 +245,8 @@ async function onCompareClick(spot) {
     const resultStack = output?.querySelector(".result-stack");
     const existingScores = spot?.scores && Object.keys(spot.scores).length ? spot.scores : null;
     const scores = existingScores ?? (resultStack ? readScoresFromDOM(resultStack) : {});
-    const currentHeroName = resultStack?.querySelector(".result-card--hero h3")?.textContent?.trim();
 
-    pinnedSpot = { ...spot, name: currentHeroName || spot.name, scores };
+    pinnedSpot = { ...spot, scores };
     setCompareModeState(true);
 
     // Await reverse geocoding so the instruction message shows the real name
