@@ -8,7 +8,7 @@
  *   <script type="module" src="./compare.js"></script>
  */
 
-import { buildSpotScores } from "./utils.js";
+import { buildSpotScores, PLACEHOLDER_SPOT_NAME } from "./utils.js";
 import { fetchPointSelectionData, fetchAddressLabelForCoordinates } from "./data-api.js";
 
 const HAMBURG_BOUNDS = [
@@ -32,7 +32,7 @@ let pinnedSpot = null;   // { lat, lon, name, noiseInfo, weatherSelection, cityT
 let isCompareMode = false;
 let lastKnownSpot = null; // filled by MutationObserver watching #output
 
-const PLACEHOLDER_SPOT_NAMES = new Set(["Selected spot", "Challenger spot", "Loading..."]);
+const PLACEHOLDER_SPOT_NAMES = new Set([PLACEHOLDER_SPOT_NAME, "Selected spot", "Challenger spot"]);
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
@@ -80,9 +80,38 @@ function watchOutputForSpotResults() {
         btn.textContent = "⚖️ Compare with another spot";
         btn.addEventListener("click", () => onCompareClick(lastKnownSpot));
         resultStack.appendChild(btn);
+
+        // Watch the hero <h3> for async name resolution (reverse geocoding)
+        if (nameEl) {
+            watchHeroNameChange(nameEl, lat, lon);
+        }
     });
 
     observer.observe(output, { childList: true, subtree: false });
+}
+
+/**
+ * Watch the hero <h3> element for text changes caused by async reverse-geocoding.
+ * When the name changes from a placeholder to a real address, update lastKnownSpot.
+ */
+function watchHeroNameChange(nameEl, lat, lon) {
+    let resolved = false;
+
+    const nameObserver = new MutationObserver(() => {
+        if (resolved || isCompareMode) return;
+
+        const newName = nameEl.textContent?.trim();
+        if (!newName || isPlaceholderName(newName) || newName === lastKnownSpot?.name) return;
+
+        resolved = true;
+        nameObserver.disconnect();
+
+        if (lastKnownSpot && lastKnownSpot.lat === lat && lastKnownSpot.lon === lon) {
+            lastKnownSpot.name = newName;
+        }
+    });
+
+    nameObserver.observe(nameEl, { characterData: true, childList: true, subtree: true });
 }
 
 // ─── Map click interceptor ────────────────────────────────────────────────────
@@ -221,10 +250,13 @@ async function onCompareClick(spot) {
     pinnedSpot = { ...spot, name: currentHeroName || spot.name, scores };
     setCompareModeState(true);
 
-    resolveSpotName(pinnedSpot, { side: "1" });
+    // Await reverse geocoding so the instruction message shows the real name
+    await resolveSpotName(pinnedSpot, { side: "1" });
+
+    const displayName = pinnedSpot.name ?? spot.name ?? "Selected spot";
 
     // Show instruction in output
-    output.innerHTML = `<section class="result-card"><p class="loading">📍Current Spot: "${spot.name}".<br><br>Now click anywhere on the map to select Spot to compare.</p></section>`;
+    output.innerHTML = `<section class="result-card"><p class="loading">📍Current Spot: "${displayName}".<br><br>Now click anywhere on the map to select Spot to compare.</p></section>`;
     output.classList.remove("is-hidden");
 }
 
@@ -430,12 +462,16 @@ async function startCompareWithSpots(spot1, spot2) {
     window.__spotScoreApp.handlePointSelection(spot2.lat, spot2.lon, { skipUrlUpdate: true });
 }
 
-function shouldResolveSpotName(name) {
+function isPlaceholderName(name) {
     if (!name) return true;
     const trimmed = name.trim();
     if (!trimmed) return true;
     if (PLACEHOLDER_SPOT_NAMES.has(trimmed)) return true;
     return /loading/i.test(trimmed);
+}
+
+function shouldResolveSpotName(name) {
+    return isPlaceholderName(name);
 }
 
 async function resolveSpotName(spot, options = {}) {

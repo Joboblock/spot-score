@@ -11,6 +11,8 @@ const AIR_QUALITY_PM25_BEST = 1;
 const AIR_QUALITY_PM25_WORST = 15;
 const AIR_QUALITY_PM10_BEST = 3;
 const AIR_QUALITY_PM10_WORST = 45;
+/** Centralized placeholder displayed while address reverse-geocoding is in-flight. */
+export const PLACEHOLDER_SPOT_NAME = "Loading…";
 const NOISE_BUCKETS = [
 	{ min: 55, max: 60, score: 10 },
 	{ min: 60, max: 65, score: 7.5 },

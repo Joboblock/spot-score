@@ -1,4 +1,4 @@
-import { buildSpotScores, TEMP_OPTIMAL_C } from "./utils.js";
+import { buildSpotScores, TEMP_OPTIMAL_C, PLACEHOLDER_SPOT_NAME } from "./utils.js";
 import { computeSunDirection, computeSunExposure } from "./sun-exposure.js";
 import {
     enuDirectionToEcef,
@@ -413,7 +413,7 @@ function placeQueryMarker(lat, lon, options = {}) {
     }
 
     queryMarker = L.marker([lat, lon]).addTo(map);
-    queryMarker.bindPopup(buildMarkerPopupHtml(addressLabel ?? "Loading...", lat, lon));
+    queryMarker.bindPopup(buildMarkerPopupHtml(addressLabel ?? PLACEHOLDER_SPOT_NAME, lat, lon));
     queryMarker.openPopup();
 
     if (!addressLabel) {
