@@ -933,7 +933,7 @@ function renderPointResults(
             <section class="result-card result-card--score">
                 <p class="score-kicker">General spot score</p>
                 <div class="score-display">${generalScoreText}</div>
-                <p class="score-caption">A combined read across noise, air quality, temperature, humidity, wind, and rain for the selected point.</p>
+                <p class="score-caption">A combined read across noise, air quality, temperature, humidity, wind, sun, and rain for the selected point.</p>
             </section>
         </div>
     `;
