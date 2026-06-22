@@ -684,13 +684,24 @@ function renderPointResults(
         sunlitStatus,
         { lookAheadHours: 12, stepMinutes: 10 }
     );
+    // Use building-aware raycast to find the next change in sunlit status.
+    // This correctly catches sun→shade transitions (building occlusion) and
+    // shade→sun transitions. Falls back to astronomical sunset/sunrise only
+    // when no building-occlusion change is found.
+    const sunlitChange = findNextSunlitChange(lat, lon, exposureNow, buildingData, { lookAheadHours: 12, stepMinutes: 5 });
+    const hasBuildingChange = sunlitChange.minutesUntilChange !== null;
+    const exposureDurationTextFinal = hasBuildingChange
+        ? formatDurationMinutes(sunlitChange.minutesUntilChange)
+        : exposureDurationText;
+    const exposureChangeLabelFinal = hasBuildingChange
+        ? sunlitChange.changeType === "sunset"
+            ? `Sunset at ${formatLocalTime(sunlitChange.changeTime, exposureNow)}`
+            : sunlitChange.changeType === "shade_starts"
+                ? `Shade starts at ${formatLocalTime(sunlitChange.changeTime, exposureNow)}`
+                : `Sun exposure starts at ${formatLocalTime(sunlitChange.changeTime, exposureNow)}`
+        : exposureChangeLabel;
     const spotScores = buildSpotScores(noiseInfo, combined, cityTemperatureStats, airQuality, sunScore);
     const generalScoreText = formatScore(spotScores.general);
-    const sunStartText = sunStartForecast.minutesUntilStart === null
-        ? "n/a"
-        : sunStartForecast.minutesUntilStart === 0
-            ? "Now"
-            : formatDurationMinutes(sunStartForecast.minutesUntilStart);
     const sunStartLabel = sunStartForecast.nextTime
         ? `Sun exposure starts at ${formatLocalTime(sunStartForecast.nextTime, exposureNow)}`
         : sunStartForecast.reason;
@@ -879,10 +890,9 @@ function renderPointResults(
                         <li><strong>Current status</strong><span>${exposureStatus}</span></li>
                         <li><strong>Sun altitude</strong><span>${exposureAltitudeText}</span></li>
                         <li><strong>Sun exposure (next 2h)</strong><span>${sunExposurePercentageText}</span></li>
-                        <li><strong>Time until sun exposure starts</strong><span>${sunStartText}</span></li>
                         <li><strong>Exposure start</strong><span>${sunStartLabel}</span></li>
-                        <li><strong>Time until change</strong><span>${exposureDurationText}</span></li>
-                        <li><strong>Next change</strong><span>${exposureChangeLabel}</span></li>
+                        <li><strong>Time until change</strong><span>${exposureDurationTextFinal}</span></li>
+                        <li><strong>Next change</strong><span>${exposureChangeLabelFinal}</span></li>
                     </ul>
                     <p class="section-note">Sun exposure uses basic ray checks against nearby building tiles. Forecast limited to 12 hours.</p>
                 </div>
@@ -1319,6 +1329,35 @@ function evaluateSunlitStatus(lat, lon, date, buildingData, debug = false) {
             ...baseDebug,
             summary: "No blocking geometry hit"
         }
+    };
+}
+
+function findNextSunlitChange(lat, lon, now, buildingData, options = {}) {
+    const lookAheadHours = Number.isFinite(options.lookAheadHours) ? options.lookAheadHours : 12;
+    const stepMinutes = Number.isFinite(options.stepMinutes) ? options.stepMinutes : 5;
+    const maxMinutes = Math.max(0, lookAheadHours * 60);
+    const currentStatus = evaluateSunlitStatus(lat, lon, now, buildingData);
+
+    for (let elapsed = stepMinutes; elapsed <= maxMinutes; elapsed += stepMinutes) {
+        const candidate = new Date(now.getTime() + elapsed * 60000);
+        const status = evaluateSunlitStatus(lat, lon, candidate, buildingData);
+
+        if (status.isSunlit !== currentStatus.isSunlit && status.isSunUp !== null) {
+            const isSunset = !status.isSunUp && currentStatus.isSunUp;
+            return {
+                minutesUntilChange: elapsed,
+                changeTime: candidate,
+                changeType: isSunset ? "sunset" : status.isSunlit ? "sun_exposure_starts" : "shade_starts",
+                reason: isSunset ? "Sunset" : status.isSunlit ? "Sun exposure expected" : "Shade expected (building occlusion)"
+            };
+        }
+    }
+
+    return {
+        minutesUntilChange: null,
+        changeTime: null,
+        changeType: null,
+        reason: `No change in next ${lookAheadHours}h`
     };
 }
 
