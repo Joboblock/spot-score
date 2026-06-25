@@ -1297,7 +1297,7 @@ button:focus-visible,
 
 .ob-weight-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: 130px 1fr auto;
     align-items: center;
     gap: 12px;
 }
