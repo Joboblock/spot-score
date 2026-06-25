@@ -24,7 +24,7 @@ const QUESTIONS = [
         answers: [
             { label: "Love the heat",         emoji: "☀️", desc: "The warmer the better",          weights: { temperature: 2.5, humidity: 1.0, wind: 0.5, noise: 0.5, airQuality: 0.5, rain: 1.0, sun: 0.5 } },
             { label: "Somewhere in between",  emoji: "😌", desc: "Not too hot, not too cold",     weights: { temperature: 1.5, humidity: 1.0, wind: 1.0, noise: 0.5, airQuality: 0.5, rain: 0.5, sun: 0.5 } },
-            { label: "Easily overheated",     emoji: "🥵", desc: "Shade and breeze please",       weights: { temperature: 2.5, wind: 1.5, humidity: 1.5, noise: 0.0, airQuality: 0.5, rain: 0.0, sun: 0.0 } },
+            { label: "Easily overheated",     emoji: "🥵", desc: "Lower temperature and a breeze",       weights: { temperature: 2.5, wind: 1.5, humidity: 1.5, noise: 0.0, airQuality: 0.5, rain: 0.0, sun: 0.0 } },
             { label: "Always freezing",       emoji: "🥶", desc: "More warmth, less wind",        weights: { temperature: 2.5, wind: 0.0, humidity: 0.5, noise: 0.5, airQuality: 0.5, rain: 1.0, sun: 1.5 } }
         ]
     },
