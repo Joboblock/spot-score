@@ -70,11 +70,9 @@ function scoreTemperatureWithAverage(temperature, optimalTemperature, tempDiffer
 		return null;
 	}
 
-	const deviation = Math.abs(temperature - optimalTemperature);
+	tempDifference = Math.max(tempDifference, 2,5);
 
-	if (tempDifference === 0) {
-		return roundToOneDecimal(deviation === 0 ? SCORE_MAX : SCORE_MIN);
-	}
+	const deviation = Math.abs(temperature - optimalTemperature);
 
 	const maxDeviation = tempDifference * 2;
 
