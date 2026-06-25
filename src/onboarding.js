@@ -1,5 +1,5 @@
 /**
- * Onboarding.js — v4
+ * onboarding.js — v4
  * Adapted for separated temperature & sun scores.
  * Fixes: Score-Farben auch ohne Weights, Weight-Bars animieren, kein Radar, kein Find-Best
  * Metrics: noise, airQuality, temperature, humidity, wind, sun, rain
